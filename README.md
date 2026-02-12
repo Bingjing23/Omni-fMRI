@@ -140,14 +140,21 @@ sh scripts/finetune.sh
 
 #### Model Checkpoints
 
-Our pre-trained model weights can be found in Huggingface.
+Our pre-trained model weights can be found in Huggingface.  https://huggingface.co/OneMore1/Omni-fMRI
 
 #### Model Docker
 
-Docker can be found in Dockerhub.
+Docker can be found in Dockerhub.   https://hub.docker.com/r/onemore1/onmi-fmri
 
 #### Citation
-Discussions are welcome. The paper **Omni-fMRI** is available in the repository (link coming soon). 
+Citations and discussions are welcome.
+
+@article{wang2026omni,
+  title={Omni-fMRI: A Universal Atlas-Free fMRI Foundation Model},
+  author={Wang, Mo and Ye, Wenhao and Xia, Junfeng and Zhang, Junxiang and Pan, Xuanye and Xu, Minghao and Deng, Haotian and Wen, Hongkai and Liu, Quanying},
+  journal={arXiv preprint arXiv:2601.23090},
+  year={2026}
+}
 
 
 
