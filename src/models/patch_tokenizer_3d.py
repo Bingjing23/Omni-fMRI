@@ -93,6 +93,7 @@ class PatchTokenizer3D(nn.Module):
         masks = select_patches_by_threshold_3d(imp_maps, thresholds=self.thresholds, images=images)
         
         output_dict = {}
+        batch_coords_list = [[] for _ in range(B)] # List of lists of tensors
         batch_scales_list = [[] for _ in range(B)]
         
         seqlens = torch.zeros(B, dtype=torch.long, device=device)
@@ -152,13 +153,16 @@ class PatchTokenizer3D(nn.Module):
                 m = mask_bool[b]
                 if m.any():
                     # select coordinates
-                    c = coord_grid[m] # (n_patches, 3)             
+                    c = coord_grid[m] # (n_patches, 3)    
+                    batch_coords_list[b].append(c)
                     # scale index
                     s = torch.full((c.shape[0],), idx, dtype=torch.long, device=device)
                     batch_scales_list[b].append(s)
 
+        final_coords_list = [torch.cat(x, dim=0) if x else torch.empty(0, 3, device=device) for x in batch_coords_list]
         final_scales_list = [torch.cat(x, dim=0) if x else torch.empty(0, dtype=torch.long, device=device) for x in batch_scales_list]
-        
+
+        padded_coords = torch.nn.utils.rnn.pad_sequence(final_coords_list, batch_first=True, padding_value=0)
         # Pad sequence: (B, N_max)
         padded_scales = torch.nn.utils.rnn.pad_sequence(final_scales_list, batch_first=True, padding_value=-1) # -1 为 padding
 
@@ -167,6 +171,7 @@ class PatchTokenizer3D(nn.Module):
         output_mask = torch.cat([cls_col, output_mask], dim=1)
 
         seqlens_with_cls = seqlens + 1
+        output_dict['patch_coords'] = padded_coords       # (B, N_max, 3) (Z, Y, X)
         output_dict['patch_scale_indices'] = padded_scales # (B, N_max)
         output_dict['output_mask'] = output_mask
 
