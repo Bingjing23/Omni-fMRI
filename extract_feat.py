@@ -27,7 +27,7 @@ from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 
 
 DEFAULT_CHECKPOINT = Path(
-    "/mnt/dataset4/yewh/omnifmri_update/Omni-fMRI/checkpoint/checkpoint_epoch_32.pth"
+    ""
 )
 
 
