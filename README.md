@@ -160,6 +160,22 @@ docker run --gpus all --rm -it \
   bash
 ```
 
+Inside the container, edit config paths to container paths, for example:
+
+```yaml
+data:
+  data_root: /data
+```
+
+Then run:
+
+```bash
+sh scripts/pretrain.sh
+# or
+sh scripts/finetune.sh
+```
+
+
 #### Option B: Use The Published Image
 
 ```bash
@@ -176,21 +192,6 @@ docker run --gpus all --rm -it \
   -v /path/to/outputs:/outputs \
   onemore1/onmi-fmri:latest \
   bash
-```
-
-Inside the container, edit config paths to container paths, for example:
-
-```yaml
-data:
-  data_root: /data
-```
-
-Then run:
-
-```bash
-sh scripts/pretrain.sh
-# or
-sh scripts/finetune.sh
 ```
 
 #### Model Checkpoints
