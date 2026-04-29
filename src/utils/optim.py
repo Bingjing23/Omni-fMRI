@@ -5,6 +5,14 @@ import os
 import torch
 import numpy as np
 
+try:
+    from peft import get_peft_model, LoraConfig
+except ImportError:
+    get_peft_model = None
+    LoraConfig = None
+
+
+
 def setup_lora(model, config):
     """
     Apply LoRA to the model based on configuration
@@ -13,7 +21,8 @@ def setup_lora(model, config):
     lora_conf = config.get('lora', {})
     if not lora_conf.get('enabled', False):
         return model
-
+    if get_peft_model is None or LoraConfig is None:
+        raise ImportError("peft is required when lora.enabled is true")
     print("Setting up LoRA...")
     target_modules = lora_conf.get('target_modules', ["qkv", "proj", "fc1", "fc2"])
     
@@ -39,14 +48,14 @@ def create_optimizer(model, config):
     Create optimizer with Layer-wise Learning Rate Decay (LLRD) support.
     """
     train_config = config['training']
-    lora_config = config['lora']
+    lora_config = config.get('lora', {'enabled': False})
     
     base_lr = train_config['learning_rate']
     weight_decay = train_config['weight_decay']
     head_lr = train_config.get('head_lr', base_lr)
     layer_decay = train_config.get('layer_decay', 1.0)
     
-    if lora_config['enabled']:
+    if lora_config.get('enabled', False):
         print("LoRA enabled: Using simple optimizer for trainable parameters only.")
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         
