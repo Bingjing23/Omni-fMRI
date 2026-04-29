@@ -49,6 +49,7 @@ The codebase is organized into modular components for easy navigation and extens
 │   └── utils/              # Helper functions (Logging, metrics, checkpoints)
 ├── finetune.py             # Main entry point for model fine-tuning
 ├── heatmap_visualize.py    # Visualization tool for generating heatmaps
+├── extract_backbone_tokens.py # Extract backbone CLS and patch tokens from NPZ inputs
 ├── pretrain.py             # Main entry point for model pre-training
 └── visual_3d.py            # Visualization tool
 ```
@@ -60,6 +61,52 @@ The codebase is organized into modular components for easy navigation and extens
 See  data_preparation.ipynb in data-preparation. The input fMRI data should be in the MNI coordinate system.
 
 fMRI data were resampled with cubic spline interpolation to a $96\times96\times96$ grid at 2 mm isotropic resolution in MNI space. Time series with TR outside 0.7–0.8 s were voxel-wise resampled to 0.72 s with cubic splines, and signals were globally z-scored within the brain mask.
+
+## Extract Backbone Feature
+
+`extract_backbone_tokens.py` loads a pre-trained checkpoint, runs each NPZ sample through the encoder backbone, and saves one output NPZ per sample.
+
+
+```bash
+python extract_backbone_tokens.py \
+  /path/to/input_npz_or_folder \
+  --output-dir /path/to/output_tokens \
+```
+
+For a single NPZ file:
+
+```bash
+python extract_backbone_tokens.py \
+  /path/to/sample.npz \
+  --output-dir /path/to/output_tokens \
+```
+
+Useful options:
+
+```bash
+--checkpoint /path/to/checkpoint.pth  # Override checkpoint path
+--npz-key arr                         # Array key inside NPZ; default is the first key
+--layout dhwt                         # Input layout: dhwt, cdhw, or auto
+--start-frame 0                       # Start frame when DHWT has more than 40 frames
+--pad-short                           # Zero-pad samples shorter than 40 frames
+--overwrite                           # Overwrite existing output NPZ files
+--no-recursive                        # Do not recursively scan input directories
+```
+
+Input assumptions:
+
+- Default input layout is `(D, H, W, T)`, with spatial shape `(96, 96, 96)`.
+- The model uses 40 temporal frames. If an input has more than 40 frames, the script uses `--start-frame` to choose a contiguous 40-frame window.
+- `--layout cdhw` can be used when the input is already `(40, 96, 96, 96)`.
+
+Each output file is named like `<input_stem>_tokens.npz` and contains:
+
+```text
+cls_token     # Shape: (768,)
+patch_tokens  # Shape: (num_patches, 768)
+patch_coords  # Shape: (num_patches, 3), top-left voxel coords in (z, y, x)
+```
+
 
 ## Training
 
