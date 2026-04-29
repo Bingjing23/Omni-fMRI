@@ -18,7 +18,7 @@ data:
   val_split_suffixes: ["val"]
   test_split_suffixes: ["test"]
   input_seq_len: 40  
-  mode: "emo"
+  mode: "directory"
 
   train_txt: null
   val_txt: null

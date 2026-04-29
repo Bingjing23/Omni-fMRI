@@ -85,13 +85,20 @@ class fMRITaskDataset(fMRIDataset):
             print(f"Using column '{label_col}' as label.")
 
             sex_mapping = {'F': 0, 'M': 1, 'f': 0, 'm': 1}
-            
-            if df[label_col].dtype == object and df[label_col].astype(str).iloc[0].upper() in ['F', 'M']:
+
+            non_null_labels = df[label_col].dropna()
+            if non_null_labels.empty:
+                raise ValueError(f"Label column '{label_col}' does not contain any valid values.")
+
+            sample_label = str(non_null_labels.iloc[0]).strip().upper()
+            if sample_label in ['F', 'M']:
                 print(f"Encoding {label_col} (F/M) to Integers (0/1)...")
                 df = df[df[label_col].isin(sex_mapping.keys())]
                 df[label_col] = df[label_col].map(sex_mapping)
             else:
-                df[label_col] = pd.to_numeric(df[label_col], errors='coerce').astype(int)
+                df[label_col] = pd.to_numeric(df[label_col], errors='coerce')
+                df.dropna(subset=[label_col], inplace=True)
+                df[label_col] = df[label_col].astype(int)
 
             for _, row in df.iterrows():
                 subject_id = row['Subject']
@@ -449,9 +456,9 @@ class EmoFMRIDataset(Dataset):
         return data_tensor, label_tensor
 
 try:
-    import zstandard as zstd
+    import zstandard as zstd
 except ImportError:
-    zstd = None
+    zstd = None
 
 
 class HCPtaskDataset(Dataset):
@@ -503,7 +510,7 @@ class HCPtaskDataset(Dataset):
 
     def _load_zst_data(self, file_path):
         if zstd is None:
-            raise ImportError("zstandard is required to load HCP task .zst data")
+            raise ImportError("zstandard is required to load HCP task .zst data")
         dctx = zstd.ZstdDecompressor()
         try:
             with open(file_path, 'rb') as f:

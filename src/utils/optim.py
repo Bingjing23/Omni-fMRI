@@ -6,10 +6,10 @@ import torch
 import numpy as np
 
 try:
-    from peft import get_peft_model, LoraConfig
+    from peft import get_peft_model, LoraConfig
 except ImportError:
-    get_peft_model = None
-    LoraConfig = None
+    get_peft_model = None
+    LoraConfig = None
 
 
 
@@ -22,7 +22,7 @@ def setup_lora(model, config):
     if not lora_conf.get('enabled', False):
         return model
     if get_peft_model is None or LoraConfig is None:
-        raise ImportError("peft is required when lora.enabled is true")
+        raise ImportError("peft is required when lora.enabled is true")
     print("Setting up LoRA...")
     target_modules = lora_conf.get('target_modules', ["qkv", "proj", "fc1", "fc2"])
     

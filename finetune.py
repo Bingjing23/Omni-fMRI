@@ -226,16 +226,21 @@ def create_dataloaders(config, is_distributed, rank, world_size):
         val_sampler = None
         test_sampler = None
 
+    loader_kwargs = {
+        'num_workers': data_config['num_workers'],
+        'pin_memory': data_config['pin_memory'],
+    }
+    if data_config['num_workers'] > 0:
+        loader_kwargs['prefetch_factor'] = data_config.get('prefetch_factor', 2)
+
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=data_config['batch_size'],
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        num_workers=data_config['num_workers'],
-        pin_memory=data_config['pin_memory'],
-        prefetch_factor=data_config.get('prefetch_factor', 2),
-        drop_last=True
+        drop_last=True,
+        **loader_kwargs,
     )
 
     val_loader = DataLoader(
@@ -243,10 +248,8 @@ def create_dataloaders(config, is_distributed, rank, world_size):
         batch_size=data_config['batch_size'],
         sampler=val_sampler,
         shuffle=False,
-        num_workers=data_config['num_workers'],
-        pin_memory=data_config['pin_memory'],
-        prefetch_factor=data_config.get('prefetch_factor', 2),
-        drop_last=False
+        drop_last=False,
+        **loader_kwargs,
     )
 
     test_loader = DataLoader(
@@ -254,10 +257,8 @@ def create_dataloaders(config, is_distributed, rank, world_size):
         batch_size=data_config['batch_size'],
         sampler=test_sampler,
         shuffle=False,
-        num_workers=data_config['num_workers'],
-        pin_memory=data_config['pin_memory'],
-        prefetch_factor=data_config.get('prefetch_factor', 2),
-        drop_last=False
+        drop_last=False,
+        **loader_kwargs,
     )
 
     return train_loader, val_loader, test_loader, train_sampler
@@ -422,7 +423,7 @@ def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description='fMRI Downstream Fine-tuning')
     parser.add_argument('--config', type=str, default='configs/finetune.yaml',
-                        help='Path to config file')
+                        help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
     parser.add_argument('--output_dir', type=str, default=None,
@@ -434,7 +435,7 @@ def main():
     config = load_config(args.config)
 
     # Override config with command line arguments
-    apply_finetune_overrides(config, args)
+    apply_finetune_overrides(config, args)
 
     # Setup distributed training
     is_distributed, rank, world_size, gpu = setup_distributed()

@@ -8,4 +8,10 @@ RUN apt-get -qq update && \
 apt-get -qq install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 && \
 apt-get clean && \
 rm -rf /var/lib/apt/lists/*
-RUN /opt/conda/bin/python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+RUN /opt/conda/bin/python3 -m pip install --no-cache-dir -r /tmp/requirements.txt && \
+rm -f /tmp/requirements.txt
+
+COPY . /workspace
+
+CMD ["bash"]
