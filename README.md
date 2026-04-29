@@ -37,7 +37,9 @@ pip install -r requirements.txt
 configs/
   finetune.yaml          # Downstream fine-tuning config
   pretrain.yaml          # Pre-training config
-data_preparation/        # Data preprocessing utilities and notebook
+data_preparation/
+  preprocessing.py       # NIfTI to segmented NPZ preprocessing pipeline
+  MNI152_T1_1mm_brain_mask.nii.gz
 scripts/
   docker_smoke_test.py   # Dummy-data Docker preflight
   finetune.sh            # Torchrun launcher for downstream tasks
@@ -55,9 +57,75 @@ visual_3d.py             # 3D visualization
 
 ## Data Preparation
 
-See [data_preparation/data_preparation.ipynb](data_preparation/data_preparation.ipynb). Input fMRI data should be aligned to MNI space.
+Use [data_preparation/preprocessing.py](data_preparation/preprocessing.py) to convert raw NIfTI files into the segmented NPZ format used by training and feature extraction.
 
-The expected training input is a 4D array with spatial size `(96, 96, 96)`. In the paper setup, fMRI volumes are resampled to 2 mm isotropic MNI space and the temporal signal is normalized within the brain mask.
+The script does the following:
+
+- recursively scans an input directory for `.nii` or `.nii.gz` files
+- symmetrically pads or crops spatial dimensions to `(96, 96, 96)` by default
+- preserves world coordinates by updating the affine after padding or cropping
+- applies Z-score normalization to non-zero voxels
+- splits 4D time series into fixed-length segments, `40` frames by default
+- writes compressed `.npz` outputs with the segment data, TR, affine, and metadata
+
+Basic usage:
+
+```bash
+python data_preparation/preprocessing.py \
+  --input_dir /path/to/raw_nifti_dir \
+  --output_dir /path/to/processed_npz_dir
+```
+
+Common options:
+
+```bash
+--pattern .nii.gz            # Match input filenames by suffix
+--target_shape 96 96 96      # Target spatial size
+--segment_length 40          # Frames per NPZ segment
+--log_level INFO             # DEBUG, INFO, WARNING, ERROR
+```
+
+If your raw file names end with a custom suffix, for example `_preproc.nii.gz`, use:
+
+```bash
+python data_preparation/preprocessing.py \
+  --input_dir /path/to/raw_nifti_dir \
+  --output_dir /path/to/processed_npz_dir \
+  --pattern _preproc.nii.gz
+```
+
+Each output `.npz` contains:
+
+```text
+data           # Segment array, shape (96, 96, 96, 40) by default
+tr             # Repetition time from the source header
+affine         # Updated affine after spatial normalization
+segment_index  # Zero-based segment id for the source file
+timepoints     # [start, end) frame range from the source timeseries
+subject_id     # Stem of the source NIfTI filename
+metadata       # Original shape and padding/cropping bookkeeping
+```
+
+For pretraining or finetuning, the script does not create train/val/test splits by itself. Run it separately for each split and write into the dataset folders expected by the loaders, for example:
+
+```text
+data_root/
+  ABIDE_train_40/
+  ABIDE_val_40/
+  HCP_train_40/
+  HCP_val_40/
+```
+
+Example:
+
+```bash
+python data_preparation/preprocessing.py \
+  --input_dir /raw/HCP_train \
+  --output_dir /data/HCP_train_40 \
+  --segment_length 40
+```
+
+The training code expects NPZ inputs with spatial size `(96, 96, 96)` and 40-frame segments unless you intentionally change the model and config settings.
 
 ## Extract Backbone Features
 
