@@ -16,7 +16,6 @@ from torch.cuda.amp import GradScaler, autocast
 from functools import partial
 
 
-from src.models.jepa_model import AdaptiveJEPA
 from src.models.mae_model import AdaptiveMAE
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 from src.data.pretrain_dataset import fMRIDataset
@@ -144,33 +143,6 @@ def create_model(config):
             mixed_patch_embed=TokenizedZeroConvPatchAttn3D,
             patch_norm=model_config['enable_patch_norm'],
             gate_attention=model_config['gate_attention']
-        )
-        
-    elif model_config['model_chose'] == 'jepa':
-        model = AdaptiveJEPA(
-            img_size=tuple(model_config['img_size']),
-            patch_size=model_config['patch_size'],
-            in_chans=model_config['in_chans'],
-            embed_dim=model_config['embed_dim'],
-            depth=model_config['depth'],
-            qkv_bias=model_config['qkv_bias'],
-            qk_norm=model_config['qk_norm'],
-            num_heads=model_config['num_heads'],
-            mlp_ratio=model_config['mlp_ratio'],
-            norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            mask_ratio=model_config['mask_ratio'],
-            mixed_patch_embed=TokenizedZeroConvPatchAttn3D,
-            gate_attention=model_config['gate_attention'],
-            lamda=model_config['lamda'],
-            num_slices=model_config['num_slices'],
-            n_points=model_config['n_points'],
-            proj_dim=model_config['proj_dim'],
-            predictor_embed_dim=model_config['predictor_embed_dim'],
-            predictor_depth=model_config['predictor_depth'],
-            use_patch_loss=model_config['use_patch_loss'],
-            use_flatten_tokens=model_config['use_flatten_tokens'],
-            sample_ratio=model_config['sample_ratio'],
-            predictor_num_heads=model_config['predictor_num_heads']
         )
 
     return model
