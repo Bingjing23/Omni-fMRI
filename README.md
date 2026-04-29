@@ -49,7 +49,7 @@ The codebase is organized into modular components for easy navigation and extens
 │   └── utils/              # Helper functions (Logging, metrics, checkpoints)
 ├── finetune.py             # Main entry point for model fine-tuning
 ├── heatmap_visualize.py    # Visualization tool for generating heatmaps
-├── extract_feat.py # Extract backbone CLS and patch tokens from NPZ inputs
+├── extract_feat.py         # Extract backbone CLS and patch tokens from NPZ inputs
 ├── pretrain.py             # Main entry point for model pre-training
 └── visual_3d.py            # Visualization tool
 ```
