@@ -77,7 +77,7 @@ data_root/
         ├── 0010002_run-1_0000-0199_2.npz  # Data chunk 2
 ```
 
-2. Edit `configs/pretrain.yaml` and update the `data_root` and `datasets`
+2. Edit `configs/pretrain.yaml` and update the `data_root` and `datasets` 
 
 ```yaml
 data:
@@ -138,6 +138,61 @@ Start downstream training:
 sh scripts/finetune.sh
 ```
 
+### How to use Docker
+
+#### Option A: Build Locally
+
+Run from the Omni-fMRI repository root:
+
+```bash
+docker build -t omnifmri:local .
+```
+
+Start the container:
+
+```bash
+docker run --gpus all --rm -it \
+  --ipc=host \
+  -v "$PWD":/workspace \
+  -v /path/to/data_root:/data \
+  -v /path/to/outputs:/outputs \
+  omnifmri:local \
+  bash
+```
+
+#### Option B: Use The Published Image
+
+```bash
+docker pull onemore1/onmi-fmri:latest
+```
+
+Run from the Omni-fMRI repository root:
+
+```bash
+docker run --gpus all --rm -it \
+  --ipc=host \
+  -v "$PWD":/workspace \
+  -v /path/to/data_root:/data \
+  -v /path/to/outputs:/outputs \
+  onemore1/onmi-fmri:latest \
+  bash
+```
+
+Inside the container, edit config paths to container paths, for example:
+
+```yaml
+data:
+  data_root: /data
+```
+
+Then run:
+
+```bash
+sh scripts/pretrain.sh
+# or
+sh scripts/finetune.sh
+```
+
 #### Model Checkpoints
 
 Our pre-trained model weights can be found in Huggingface.  https://huggingface.co/OneMore1/Omni-fMRI
@@ -145,6 +200,7 @@ Our pre-trained model weights can be found in Huggingface.  https://huggingface.
 #### Model Docker
 
 Docker can be found in Dockerhub.   https://hub.docker.com/r/onemore1/onmi-fmri
+
 
 #### Citation
 Citations and discussions are welcome.
