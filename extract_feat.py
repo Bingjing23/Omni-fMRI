@@ -26,11 +26,6 @@ from src.models.mae_model import AdaptiveMAE
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 
 
-DEFAULT_CHECKPOINT = Path(
-    ""
-)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Extract CLS token, patch tokens, and patch coordinates from Omni-fMRI NPZ data."
@@ -45,8 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=DEFAULT_CHECKPOINT,
-        help=f"Checkpoint path (default: {DEFAULT_CHECKPOINT})",
+        required=True,
+        help="Checkpoint path",
     )
     parser.add_argument(
         "--config",
