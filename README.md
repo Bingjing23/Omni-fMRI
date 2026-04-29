@@ -64,7 +64,7 @@ fMRI data were resampled with cubic spline interpolation to a $96\times96\times9
 
 ## Extract Backbone Feature
 
-`extract_backbone_tokens.py` loads a pre-trained checkpoint, runs each NPZ sample through the encoder backbone, and saves one output NPZ per sample.
+`extract_feat.py` loads a pre-trained checkpoint, runs each NPZ sample through the encoder backbone, and saves one output NPZ per sample.
 
 
 ```bash
