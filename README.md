@@ -139,8 +139,9 @@ data:
 3. Start pre-training from unlabeled fMRI data using multi-scale masked prediction tasks:
 
 ```bash
-# running pretrain
-sh scripts/pretrain.sh
+# example usage
+CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 CONFIG_FILE=configs/pretrain.yaml OUTPUT_DIR=outputs/pretrain \
+  bash scripts/pretrain.sh --cfg-options model.thresholds='[0.23]' training.warmup_epochs=5
 ```
 
 ### Downstream evaluation
@@ -186,7 +187,13 @@ Start downstream training:
 
 ```bash
 # running downstream training
-sh scripts/finetune.sh
+bash scripts/finetune.sh \
+  --pretrained_checkpoint /path/to/pretrain_checkpoint.pth \
+  --data_root /path/to/data_root \
+  --task_csv /path/to/data_csv \
+  --task_type classification \
+  --num_classes 2 \
+  --batch_size 16
 ```
 
 ### How to use Docker
