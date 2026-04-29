@@ -448,8 +448,11 @@ class EmoFMRIDataset(Dataset):
         
         return data_tensor, label_tensor
 
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
-import zstandard as zstd
 
 class HCPtaskDataset(Dataset):
     def __init__(self, txt_path, time_length=40, padding_mode='zeros', transform=None):
@@ -499,6 +502,8 @@ class HCPtaskDataset(Dataset):
         return label_to_id, id_to_label
 
     def _load_zst_data(self, file_path):
+        if zstd is None:
+            raise ImportError("zstandard is required to load HCP task .zst data")
         dctx = zstd.ZstdDecompressor()
         try:
             with open(file_path, 'rb') as f:
