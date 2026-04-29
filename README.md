@@ -49,7 +49,7 @@ The codebase is organized into modular components for easy navigation and extens
 │   └── utils/              # Helper functions (Logging, metrics, checkpoints)
 ├── finetune.py             # Main entry point for model fine-tuning
 ├── heatmap_visualize.py    # Visualization tool for generating heatmaps
-├── extract_backbone_tokens.py # Extract backbone CLS and patch tokens from NPZ inputs
+├── extract_feat.py # Extract backbone CLS and patch tokens from NPZ inputs
 ├── pretrain.py             # Main entry point for model pre-training
 └── visual_3d.py            # Visualization tool
 ```
@@ -68,17 +68,19 @@ fMRI data were resampled with cubic spline interpolation to a $96\times96\times9
 
 
 ```bash
-python extract_backbone_tokens.py \
+python extract_feat.py \
   /path/to/input_npz_or_folder \
-  --output-dir /path/to/output_tokens \
+  --checkpoint /path/to/checkpoint.pth \
+  --output-dir /path/to/output_tokens 
 ```
 
 For a single NPZ file:
 
 ```bash
-python extract_backbone_tokens.py \
+python extract_feat.py \
   /path/to/sample.npz \
-  --output-dir /path/to/output_tokens \
+  --checkpoint /path/to/checkpoint.pth \
+  --output-dir /path/to/output_tokens 
 ```
 
 Useful options:
