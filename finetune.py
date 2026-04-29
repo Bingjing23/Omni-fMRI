@@ -24,6 +24,7 @@ from src.utils.logging_utils import MetricLogger, log_to_file, load_config, coun
 from src.utils.dist_ddp import setup_distributed, cleanup_distributed
 from src.utils.optim import create_lr_scheduler, create_optimizer
 from src.utils.utils import LabelScaler, save_checkpoint, load_checkpoint, set_seed
+from src.utils.config_overrides import add_finetune_override_args, apply_finetune_overrides
 
 
 def create_model(config):
@@ -420,22 +421,20 @@ def main():
     """Main fine-tuning function"""
     # Parse arguments
     parser = argparse.ArgumentParser(description='fMRI Downstream Fine-tuning')
-    parser.add_argument('--config', type=str, default='configs/finetune_config.yaml',
-                        help='Path to config file')
+    parser.add_argument('--config', type=str, default='configs/finetune.yaml',
+                        help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (overrides config)')
+    add_finetune_override_args(parser)
     args = parser.parse_args()
 
     # Load config
     config = load_config(args.config)
 
     # Override config with command line arguments
-    if args.resume is not None:
-        config['experiment']['resume'] = args.resume
-    if args.output_dir is not None:
-        config['experiment']['output_dir'] = args.output_dir
+    apply_finetune_overrides(config, args)
 
     # Setup distributed training
     is_distributed, rank, world_size, gpu = setup_distributed()
