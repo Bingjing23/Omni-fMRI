@@ -20,6 +20,7 @@ from src.models.mae_model import AdaptiveMAE
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 from src.data.pretrain_dataset import fMRIDataset
 import warnings
+from src.utils.config_overrides import add_pretrain_override_args, apply_pretrain_overrides
 warnings.filterwarnings("ignore", message=".*torch.cuda.amp.autocast.*")
 
 
@@ -557,23 +558,21 @@ def main():
     """Main training function"""
     # Parse arguments
     parser = argparse.ArgumentParser(description='fMRI Pretraining')
-    parser.add_argument('--config', type=str, default='configs/pretrain_config.yaml',
+    parser.add_argument('--config', type=str, default='configs/pretrain.yaml',
                         help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
     parser.add_argument('--no_val', type=bool, default=False, help='Disable validation')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (overrides config)')
+    add_pretrain_override_args(parser)
     args = parser.parse_args()
 
     # Load config
     config = load_config(args.config)
 
     # Override config with command line arguments
-    if args.resume is not None:
-        config['experiment']['resume'] = args.resume
-    if args.output_dir is not None:
-        config['experiment']['output_dir'] = args.output_dir
+    apply_pretrain_overrides(config, args)
 
     # Setup distributed training
     is_distributed, rank, world_size, gpu = setup_distributed()
