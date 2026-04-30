@@ -1,46 +1,5 @@
-from peft import get_peft_model, LoraConfig, TaskType
-import torch.nn as nn
-import os
-
 import torch
 import numpy as np
-
-try:
-    from peft import get_peft_model, LoraConfig
-except ImportError:
-    get_peft_model = None
-    LoraConfig = None
-
-
-
-def setup_lora(model, config):
-    """
-    Apply LoRA to the model based on configuration
-    """
-
-    lora_conf = config.get('lora', {})
-    if not lora_conf.get('enabled', False):
-        return model
-    if get_peft_model is None or LoraConfig is None:
-        raise ImportError("peft is required when lora.enabled is true")
-    print("Setting up LoRA...")
-    target_modules = lora_conf.get('target_modules', ["qkv", "proj", "fc1", "fc2"])
-    
-    peft_config = LoraConfig(
-        r=lora_conf.get('r', 8),
-        lora_alpha=lora_conf.get('alpha', 16),
-        target_modules=target_modules,
-        lora_dropout=lora_conf.get('dropout', 0.1),
-        bias=lora_conf.get('bias', "none"),
-        modules_to_save=["head"] 
-    )
-
-    model = get_peft_model(model, peft_config)
-    
-    print("LoRA Setup Complete.")
-    model.print_trainable_parameters()
-    
-    return model
 
 
 def create_optimizer(model, config):
@@ -48,32 +7,11 @@ def create_optimizer(model, config):
     Create optimizer with Layer-wise Learning Rate Decay (LLRD) support.
     """
     train_config = config['training']
-    lora_config = config.get('lora', {'enabled': False})
     
     base_lr = train_config['learning_rate']
     weight_decay = train_config['weight_decay']
     head_lr = train_config.get('head_lr', base_lr)
     layer_decay = train_config.get('layer_decay', 1.0)
-    
-    if lora_config.get('enabled', False):
-        print("LoRA enabled: Using simple optimizer for trainable parameters only.")
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        
-        if train_config['optimizer'].lower() == 'adamw':
-            optimizer = torch.optim.AdamW(
-                trainable_params,
-                lr=base_lr,
-                betas=tuple(train_config['betas']),
-                weight_decay=weight_decay
-            )
-        elif train_config['optimizer'].lower() == 'sgd':
-            optimizer = torch.optim.SGD(
-                trainable_params,
-                lr=base_lr,
-                momentum=train_config.get('momentum', 0.9),
-                weight_decay=weight_decay
-            )
-        return optimizer
 
     if layer_decay >= 1.0:
         print(f"Layer decay not enabled (value: {layer_decay}). Using standard optimizer.")

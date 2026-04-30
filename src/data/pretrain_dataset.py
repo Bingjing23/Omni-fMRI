@@ -6,6 +6,24 @@ import torch
 from torch.utils.data import Dataset
 import random
 
+
+def global_zscore_nonzero(data: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Z-score non-zero voxels while keeping zero-valued background at zero."""
+    mask = data != 0
+    if not np.any(mask):
+        return data
+
+    normalized = np.zeros_like(data, dtype=np.float32)
+    foreground = data[mask].astype(np.float32, copy=False)
+    mean = foreground.mean()
+    std = foreground.std()
+    if std < eps:
+        return normalized
+
+    normalized[mask] = (foreground - mean) / std
+    return normalized
+
+
 class fMRIDataset(Dataset):
     def __init__(self, 
                  data_root, datasets, split_suffixes, crop_length=40, downstream=False):
@@ -55,6 +73,7 @@ class fMRIDataset(Dataset):
         else:
             cropped_data = fmri_data[..., :self.crop_length]
 
+        cropped_data = global_zscore_nonzero(cropped_data)
         data_tensor = torch.from_numpy(cropped_data)
         data_tensor = data_tensor.permute(3, 0, 1, 2)
 

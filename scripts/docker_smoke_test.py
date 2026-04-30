@@ -59,6 +59,10 @@ def create_dummy_data(root: Path) -> Path:
     for split_dir in split_dirs:
         write_npz(root / split_dir / SUBJECT_DIR / SAMPLE_NAME)
 
+    (root / "train.txt").write_text(str(root / "ABIDE_train" / SUBJECT_DIR) + "\n", encoding="utf-8")
+    (root / "val.txt").write_text(str(root / "ABIDE_val" / SUBJECT_DIR) + "\n", encoding="utf-8")
+    (root / "test.txt").write_text(str(root / "ABIDE_test" / SUBJECT_DIR) + "\n", encoding="utf-8")
+
     labels_csv = root / "labels.csv"
     labels_csv.write_text(f"Subject,gender,age\n{SUBJECT_ID},M,21\n", encoding="utf-8")
     return labels_csv
@@ -81,13 +85,25 @@ def make_finetune_config(data_root: Path, labels_csv: Path, output_root: Path) -
     config["experiment"]["pretrained_checkpoint"] = None
     config["task"]["csv"] = str(labels_csv)
     config["task"]["task_type"] = "classification"
+    config["task"]["target_col"] = "gender"
     config["task"]["num_classes"] = 2
     config["data"]["data_root"] = str(data_root)
     config["data"]["datasets"] = ["ABIDE"]
     config["data"]["mode"] = "directory"
+    config["data"]["subject_id_regex"] = r"(\d{7})"
     config["data"]["batch_size"] = 1
     config["data"]["num_workers"] = 0
     config["data"]["pin_memory"] = False
+    return config
+
+
+def make_finetune_txt_config(data_root: Path, labels_csv: Path, output_root: Path) -> dict:
+    config = make_finetune_config(data_root, labels_csv, output_root)
+    config["experiment"]["output_dir"] = str(output_root / "finetune_txt")
+    config["data"]["mode"] = "txt"
+    config["data"]["train_txt"] = str(data_root / "train.txt")
+    config["data"]["val_txt"] = str(data_root / "val.txt")
+    config["data"]["test_txt"] = str(data_root / "test.txt")
     return config
 
 
@@ -121,7 +137,7 @@ def validate_finetune_pipeline(config: dict) -> None:
     assert tuple(labels.shape) == (1,), labels.shape
 
     print(
-        f"[finetune] model={type(model).__name__} "
+        f"[finetune:{config['data']['mode']}] model={type(model).__name__} "
         f"train_samples={len(train_loader.dataset)} "
         f"batch_shape={tuple(samples.shape)} "
         f"label_shape={tuple(labels.shape)}"
@@ -140,6 +156,7 @@ def main() -> None:
 
     validate_pretrain_pipeline(make_pretrain_config(data_root, output_root))
     validate_finetune_pipeline(make_finetune_config(data_root, labels_csv, output_root))
+    validate_finetune_pipeline(make_finetune_txt_config(data_root, labels_csv, output_root))
 
     print("Docker smoke test passed. Dummy data, configs, dataloaders, and model construction are all valid.")
 

@@ -63,7 +63,6 @@ def add_pretrain_override_args(parser):
     parser.add_argument("--thresholds", nargs="+", type=float, default=None)
     parser.add_argument("--method", type=str, default=None)
     parser.add_argument("--gate_attention", type=str, default=None)
-    parser.add_argument("--model_chose", type=str, default=None)
     parser.add_argument("--mask_ratio", type=float, default=None)
 
     parser.add_argument("--epochs", type=int, default=None)
@@ -94,10 +93,10 @@ def add_finetune_override_args(parser):
     parser.add_argument("--pretrained_checkpoint", type=str, default=None)
     parser.add_argument("--task_csv", type=str, default=None)
     parser.add_argument("--task_type", type=str, default=None)
+    parser.add_argument("--target_col", type=str, default=None)
     parser.add_argument("--num_classes", type=int, default=None)
-    parser.add_argument("--task_mean", type=float, default=None)
-    parser.add_argument("--task_std", type=float, default=None)
     parser.add_argument("--data_mode", type=str, default=None)
+    parser.add_argument("--subject_id_regex", type=str, default=None)
     parser.add_argument("--test_split_suffixes", nargs="+", default=None)
     parser.add_argument("--train_txt", type=str, default=None)
     parser.add_argument("--val_txt", type=str, default=None)
@@ -136,7 +135,6 @@ def apply_pretrain_overrides(config, args):
         "thresholds": "thresholds",
         "method": "method",
         "gate_attention": "gate_attention",
-        "model_chose": "model_chose",
         "mask_ratio": "mask_ratio",
     }
     training_map = {
@@ -168,12 +166,12 @@ def apply_finetune_overrides(config, args):
     task_map = {
         "task_csv": "csv",
         "task_type": "task_type",
+        "target_col": "target_col",
         "num_classes": "num_classes",
-        "task_mean": "mean",
-        "task_std": "std",
     }
     data_map = {
         "data_mode": "mode",
+        "subject_id_regex": "subject_id_regex",
         "test_split_suffixes": "test_split_suffixes",
         "train_txt": "train_txt",
         "val_txt": "val_txt",

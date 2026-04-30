@@ -6,6 +6,46 @@ import datetime
 
 import yaml
 
+
+class WandbLogger:
+    """Small rank-zero-only W&B wrapper with no effect when disabled."""
+
+    def __init__(self, config, run_name=None):
+        logging_config = config.get("logging", {})
+        self.enabled = bool(logging_config.get("use_wandb", False))
+        self.run = None
+        self._wandb = None
+
+        if not self.enabled:
+            return
+
+        try:
+            import wandb
+        except ImportError as exc:
+            raise ImportError("wandb is required when logging.use_wandb is true") from exc
+
+        self._wandb = wandb
+        self.run = wandb.init(
+            project=logging_config.get("wandb_project"),
+            entity=logging_config.get("wandb_entity"),
+            name=run_name or config.get("experiment", {}).get("name"),
+            config=config,
+        )
+
+    def log(self, metrics, step=None, prefix=None):
+        if not self.enabled:
+            return
+        payload = {
+            f"{prefix}/{key}" if prefix else key: value
+            for key, value in metrics.items()
+        }
+        self._wandb.log(payload, step=step)
+
+    def finish(self):
+        if self.enabled and self.run is not None:
+            self._wandb.finish()
+
+
 class MetricLogger:
     """Metric logger for training"""
     def __init__(self, delimiter="\t"):

@@ -17,10 +17,9 @@ from torch.cuda.amp import GradScaler, autocast
 
 from src.models.vision_transformer import VisionTransformer 
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
-from src.data.downstream_dataset import fMRITaskDataset, fMRITaskDataset1, EmoFMRIDataset, HCPtaskDataset
-from src.data.adni_dataset import ADNIDataset
+from src.data.downstream_dataset import fMRITaskDataset, fMRITaskDataset1
 
-from src.utils.logging_utils import MetricLogger, log_to_file, count_parameters
+from src.utils.logging_utils import MetricLogger, WandbLogger, log_to_file, count_parameters
 from src.utils.cli_app import YamlBackedCliApp
 from src.utils.dist_ddp import setup_distributed, cleanup_distributed
 from src.utils.optim import create_lr_scheduler, create_optimizer
@@ -119,102 +118,72 @@ def create_dataloaders(config, is_distributed, rank, world_size):
     """Create train, validation, and test dataloaders"""
     data_config = config['data']
     task_config = config['task']
+    dataset_kwargs = {
+        "data_root": data_config["data_root"],
+        "datasets": data_config["datasets"],
+        "crop_length": data_config["input_seq_len"],
+        "label_csv_path": task_config["csv"],
+        "target_col": task_config.get("target_col"),
+        "subject_id_regex": data_config.get("subject_id_regex"),
+        "task_type": task_config["task_type"],
+    }
 
     if data_config['mode'] == "directory":
         train_dataset = fMRITaskDataset(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
             split_suffixes=data_config['train_split_suffixes'],
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            **dataset_kwargs,
         )
 
         val_dataset = fMRITaskDataset(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
             split_suffixes=data_config['val_split_suffixes'],
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            **dataset_kwargs,
         )
 
 
         test_dataset = fMRITaskDataset(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
             split_suffixes=data_config.get('test_split_suffixes', ['test']),
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            **dataset_kwargs,
         )
     
     elif data_config['mode'] == "txt":
+        missing_txt = [
+            name for name in ("train_txt", "val_txt", "test_txt")
+            if not data_config.get(name)
+        ]
+        if missing_txt:
+            raise ValueError(f"TXT mode requires these CLI args: {', '.join('--' + name for name in missing_txt)}")
+
         train_dataset = fMRITaskDataset1(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
-            split_suffixes=data_config['train_split_suffixes'],
             subject_list_txt=data_config['train_txt'],
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            data_root=data_config["data_root"],
+            crop_length=data_config["input_seq_len"],
+            label_csv_path=task_config["csv"],
+            target_col=task_config.get("target_col"),
+            subject_id_regex=data_config.get("subject_id_regex"),
+            task_type=task_config["task_type"],
         )
 
         val_dataset = fMRITaskDataset1(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
-            split_suffixes=data_config['val_split_suffixes'],
             subject_list_txt=data_config['val_txt'],
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            data_root=data_config["data_root"],
+            crop_length=data_config["input_seq_len"],
+            label_csv_path=task_config["csv"],
+            target_col=task_config.get("target_col"),
+            subject_id_regex=data_config.get("subject_id_regex"),
+            task_type=task_config["task_type"],
         )
 
         test_dataset = fMRITaskDataset1(
-            data_root=data_config['data_root'],
-            datasets=data_config['datasets'],
             subject_list_txt=data_config['test_txt'],
-            split_suffixes=data_config.get('test_split_suffixes', ['test']),
-            crop_length=data_config['input_seq_len'],
-            label_csv_path=task_config['csv'],
-            task_type=task_config['task_type']
+            data_root=data_config["data_root"],
+            crop_length=data_config["input_seq_len"],
+            label_csv_path=task_config["csv"],
+            target_col=task_config.get("target_col"),
+            subject_id_regex=data_config.get("subject_id_regex"),
+            task_type=task_config["task_type"],
         )
-
-    elif data_config['mode'] == "emo":
-
-        train_dataset = EmoFMRIDataset(
-            txt_file="",
-            csv_dir=""
-        )
-
-        val_dataset = EmoFMRIDataset(
-            txt_file="",
-            csv_dir=""
-        )
-
-        test_dataset = EmoFMRIDataset(
-            txt_file="",
-            csv_dir=""
-        )
-
-    elif data_config['mode'] == "task":
-
-        train_dataset = HCPtaskDataset(
-            txt_path=""
-        )
-
-        val_dataset = HCPtaskDataset(
-            txt_path=""
-        )
-
-        test_dataset = HCPtaskDataset(
-            txt_path=""
-        )
-
-    elif data_config['mode'] == "adni":
-        train_dataset = ADNIDataset(txt_file="")
-        val_dataset = ADNIDataset(txt_file="")
-        test_dataset = ADNIDataset(txt_file="")
+    else:
+        raise ValueError(f"Unsupported data mode: {data_config['mode']}. Supported modes: directory, txt.")
 
     if is_distributed:
         train_sampler = DistributedSampler(
@@ -267,6 +236,29 @@ def create_dataloaders(config, is_distributed, rank, world_size):
     )
 
     return train_loader, val_loader, test_loader, train_sampler
+
+
+def fit_regression_scaler_from_train(train_dataset, config, device, is_distributed, rank):
+    train_targets = train_dataset.target_values()
+    mean_val = float(train_targets.mean().item())
+    std_val = float(train_targets.std(unbiased=False).item())
+    if std_val < 1e-8:
+        std_val = 1.0
+
+    config['task']['mean'] = mean_val
+    config['task']['std'] = std_val
+
+    if rank == 0:
+        print(f"StandardScaler fit from train labels. Mean: {mean_val:.4f}, Std: {std_val:.4f}")
+
+    norm_mean = torch.tensor(mean_val, device=device, dtype=torch.float32)
+    norm_std = torch.tensor(std_val, device=device, dtype=torch.float32)
+
+    if is_distributed:
+        dist.broadcast(norm_mean, src=0)
+        dist.broadcast(norm_std, src=0)
+
+    return LabelScaler(norm_mean, norm_std)
 
 
 def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler, epoch, config,
@@ -544,19 +536,12 @@ class FinetuneApp(YamlBackedCliApp):
 
         label_scaler = None
         if config['task']['task_type'] == 'regression':
-            mean_val = config['task']['mean']
-            scale_val = config['task']['std']
+            label_scaler = fit_regression_scaler_from_train(
+                train_loader.dataset, config, device, is_distributed, rank
+            )
             if rank == 0:
-                print(f"StandardScaler fit complete. Mean: {mean_val:.4f}, Std: {scale_val:.4f}")
-
-            norm_mean = torch.tensor(mean_val, device=device, dtype=torch.float32)
-            norm_std = torch.tensor(scale_val, device=device, dtype=torch.float32)
-
-            if is_distributed:
-                dist.broadcast(norm_mean, src=0)
-                dist.broadcast(norm_std, src=0)
-
-            label_scaler = LabelScaler(norm_mean, norm_std)
+                with open(output_dir / 'config.yaml', 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False)
 
         if rank == 0:
             print(f"Training samples: {len(train_loader.dataset)}")
@@ -599,54 +584,101 @@ class FinetuneApp(YamlBackedCliApp):
             print("Starting fine-tuning...")
             print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
 
-        for epoch in range(start_epoch, config['training']['epochs']):
-            if is_distributed and train_sampler is not None:
-                train_sampler.set_epoch(epoch)
+        wandb_logger = WandbLogger(config) if rank == 0 else None
 
-            # Train for one epoch
-            train_stats = train_one_epoch(
-                model, train_loader, criterion, optimizer, scheduler, scaler,
-                epoch, config, rank, device, label_scaler
-            )
+        try:
+            for epoch in range(start_epoch, config['training']['epochs']):
+                if is_distributed and train_sampler is not None:
+                    train_sampler.set_epoch(epoch)
 
-            # Log training stats
-            if rank == 0:
-                log_msg = f"Epoch {epoch} Training - "
-                log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
-                print(log_msg)
-                log_to_file(log_file, log_msg)
+                # Train for one epoch
+                train_stats = train_one_epoch(
+                    model, train_loader, criterion, optimizer, scheduler, scaler,
+                    epoch, config, rank, device, label_scaler
+                )
 
-            # Validate
-            if epoch % config['validation']['val_freq'] == 0 or epoch == config['training']['epochs'] - 1:
-                val_stats = evaluate(model, val_loader, criterion, config, rank, device, epoch, label_scaler, 'val')
-                test_stats = evaluate(model, test_loader, criterion, config, rank, device, epoch, label_scaler, 'test')
-
-                # Log validation stats
+                # Log training stats
                 if rank == 0:
-                    log_msg = f"Epoch {epoch} Validation - "
-                    log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in val_stats.items()])
+                    log_msg = f"Epoch {epoch} Training - "
+                    log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
                     print(log_msg)
                     log_to_file(log_file, log_msg)
+                    wandb_logger.log(train_stats, step=epoch, prefix="train")
 
-                    log_msg = f"Epoch {epoch} Test - "
-                    log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in test_stats.items()])
-                    print(log_msg)
-                    log_to_file(log_file, log_msg)
+                # Validate
+                if epoch % config['validation']['val_freq'] == 0 or epoch == config['training']['epochs'] - 1:
+                    val_stats = evaluate(model, val_loader, criterion, config, rank, device, epoch, label_scaler, 'val')
+                    test_stats = evaluate(model, test_loader, criterion, config, rank, device, epoch, label_scaler, 'test')
 
-                # Determine best model based on task type
-                if rank == 0:
-                    if task_config['task_type'] == 'classification':
-                        current_metric = val_stats.get('acc', 0.0)
-                        is_best = current_metric > best_metric
+                    # Log validation stats
+                    if rank == 0:
+                        log_msg = f"Epoch {epoch} Validation - "
+                        log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in val_stats.items()])
+                        print(log_msg)
+                        log_to_file(log_file, log_msg)
+                        wandb_logger.log(val_stats, step=epoch, prefix="val")
+
+                        log_msg = f"Epoch {epoch} Test - "
+                        log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in test_stats.items()])
+                        print(log_msg)
+                        log_to_file(log_file, log_msg)
+                        wandb_logger.log(test_stats, step=epoch, prefix="test")
+
+                    # Determine best model based on task type
+                    if rank == 0:
+                        if task_config['task_type'] == 'classification':
+                            current_metric = val_stats.get('acc', 0.0)
+                            is_best = current_metric > best_metric
+                            if is_best:
+                                best_metric = current_metric
+                                best_loss = val_stats['loss']
+                        else:
+                            is_best = val_stats['loss'] < best_loss
+                            if is_best:
+                                best_loss = val_stats['loss']
+                                best_metric = -best_loss
+
+                        checkpoint_state = {
+                            'epoch': epoch + 1,
+                            'model_state_dict': model_without_ddp.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'scheduler_state_dict': scheduler.state_dict(),
+                            'best_metric': best_metric,
+                            'best_loss': best_loss,
+                            'config': config,
+                            'train_stats': train_stats,
+                            'val_stats': val_stats,
+                        }
+
+                        if scaler is not None:
+                            checkpoint_state['scaler_state_dict'] = scaler.state_dict()
+
+                        save_checkpoint(
+                            checkpoint_state,
+                            is_best,
+                            checkpoint_dir,
+                            filename=f'checkpoint_epoch_{epoch}.pth'
+                        )
+
+                        checkpoint_msg = f"Checkpoint saved at epoch {epoch}"
+                        print(checkpoint_msg)
+                        log_to_file(log_file, checkpoint_msg)
+                        wandb_logger.log({"checkpoint_epoch": epoch + 1}, step=epoch)
+
                         if is_best:
-                            best_metric = current_metric
-                            best_loss = val_stats['loss']
-                    else:
-                        is_best = val_stats['loss'] < best_loss
-                        if is_best:
-                            best_loss = val_stats['loss']
-                            best_metric = -best_loss
+                            wandb_logger.log(
+                                {"best_metric": best_metric, "best_loss": best_loss},
+                                step=epoch,
+                            )
+                            if task_config['task_type'] == 'classification':
+                                best_msg = f"New best validation accuracy: {best_metric:.4f}"
+                            else:
+                                best_msg = f"New best validation loss: {best_loss:.4f}"
+                            print(best_msg)
+                            log_to_file(log_file, best_msg)
 
+                # Save periodic checkpoint
+                if rank == 0 and (epoch + 1) % config['logging']['save_freq'] == 0:
                     checkpoint_state = {
                         'epoch': epoch + 1,
                         'model_state_dict': model_without_ddp.state_dict(),
@@ -655,8 +687,6 @@ class FinetuneApp(YamlBackedCliApp):
                         'best_metric': best_metric,
                         'best_loss': best_loss,
                         'config': config,
-                        'train_stats': train_stats,
-                        'val_stats': val_stats,
                     }
 
                     if scaler is not None:
@@ -664,44 +694,13 @@ class FinetuneApp(YamlBackedCliApp):
 
                     save_checkpoint(
                         checkpoint_state,
-                        is_best,
+                        False,
                         checkpoint_dir,
                         filename=f'checkpoint_epoch_{epoch}.pth'
                     )
-
-                    checkpoint_msg = f"Checkpoint saved at epoch {epoch}"
-                    print(checkpoint_msg)
-                    log_to_file(log_file, checkpoint_msg)
-
-                    if is_best:
-                        if task_config['task_type'] == 'classification':
-                            best_msg = f"New best validation accuracy: {best_metric:.4f}"
-                        else:
-                            best_msg = f"New best validation loss: {best_loss:.4f}"
-                        print(best_msg)
-                        log_to_file(log_file, best_msg)
-
-            # Save periodic checkpoint
-            if rank == 0 and (epoch + 1) % config['logging']['save_freq'] == 0:
-                checkpoint_state = {
-                    'epoch': epoch + 1,
-                    'model_state_dict': model_without_ddp.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'best_metric': best_metric,
-                    'best_loss': best_loss,
-                    'config': config,
-                }
-
-                if scaler is not None:
-                    checkpoint_state['scaler_state_dict'] = scaler.state_dict()
-
-                save_checkpoint(
-                    checkpoint_state,
-                    False,
-                    checkpoint_dir,
-                    filename=f'checkpoint_epoch_{epoch}.pth'
-                )
+        finally:
+            if wandb_logger is not None:
+                wandb_logger.finish()
 
         # Cleanup
         cleanup_distributed()
@@ -709,5 +708,3 @@ class FinetuneApp(YamlBackedCliApp):
 
 if __name__ == '__main__':
     FinetuneApp.main()
-
-

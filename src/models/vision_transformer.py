@@ -73,9 +73,7 @@ class VisionTransformer(nn.Module):
             thresholds: List[float] = [0.23],
             alpha_schedule: Optional[bool] = False,
             downstream: Optional[bool] = True,
-            post_train: bool = False,
             fusion_mode: str = 'none',
-            enable_llm: bool = False,
             gate_attention: str = 'none',
             method: str = 'std',
             freeze_backbone: bool = False
@@ -135,8 +133,6 @@ class VisionTransformer(nn.Module):
         self.dynamic_img_size = dynamic_img_size
         self.grad_checkpointing = False
         self.downstream = downstream
-        self.enable_llm = enable_llm
-        self.post_train = post_train
 
         embed_args = {}
         if dynamic_img_size:
@@ -245,16 +241,6 @@ class VisionTransformer(nn.Module):
             else:
                 self.head = nn.Linear(self.embed_dim, num_classes)
 
-
-        if self.post_train:
-            self.fmri_proj = nn.Sequential(
-                             nn.Linear(embed_dim, 384),
-                             nn.LayerNorm(384),
-                             nn.GELU(),
-                             nn.Linear(384, 256)
-            )
-            if self.downstream:
-                self.head_classify = nn.Linear(1024, 2)
 
         self.init_multiscale_patch_embed()
         if weight_init != 'skip':
@@ -399,18 +385,8 @@ class VisionTransformer(nn.Module):
         # Run the model.
         with torch.cuda.amp.autocast(dtype=target_dtype):
             all_layer_feats = self.forward_features(x_packed, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
-
-        if self.enable_llm:
-            return all_layer_feats, cu_seqlens, max_seqlen
         
         pooled_feats = self._extract_pooled_features(all_layer_feats, input_dict, cu_seqlens, seqlens)
-
-        if self.post_train:
-            x = pooled_feats[-1]
-            fmri_feat = self.fmri_proj(x)
-            if self.downstream:
-                fmri_feat = self.head_classify(fmri_feat)
-            return fmri_feat
 
         if self.fusion_mode == '1':
             # 1. Layers 1-8 (indices 0-7): Weighted Sum
@@ -441,5 +417,3 @@ class VisionTransformer(nn.Module):
             logit = self.forward_head(x)
 
         return logit
-    
-    

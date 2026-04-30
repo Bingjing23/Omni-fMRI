@@ -22,6 +22,5 @@ tqdm
 matplotlib
 scikit-learn
 pandas
-peft
 nibabel
 zstandard

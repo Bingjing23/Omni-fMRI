@@ -7,8 +7,9 @@ task:
   task_type: "regression"  # "classification" or "regression"
   num_classes: 1  
   csv: ""  
-  mean: 22.395441
-  std: 23.620272
+  target_col: "age"
+  mean: null  # Computed from train labels for regression
+  std: null   # Computed from train labels for regression
 
 
 data:
@@ -19,6 +20,7 @@ data:
   test_split_suffixes: ["test"]
   input_seq_len: 40  
   mode: "directory"
+  subject_id_regex: "(\\d{7})"
 
   train_txt: null
   val_txt: null
@@ -97,4 +99,3 @@ logging:
 validation:
   val_freq: 1  # Validation frequency (epochs)
   save_best: true  # Save best model based on validation metric
-

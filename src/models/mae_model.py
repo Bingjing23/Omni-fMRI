@@ -13,6 +13,10 @@ from .patch_tokenizer_3d import PatchTokenizer3D
 from .vit_components import Block
 
 
+class NoMaskedTokensError(RuntimeError):
+    """Raised when a MAE batch has no masked tokens to reconstruct."""
+
+
 class MAEDecoder(nn.Module):
     def __init__(self, patch_size, img_size, num_classes=1, embed_dim=768, decoder_embed_dim=512,
                  decoder_depth=8, decoder_num_heads=16, mlp_ratio=4., norm_layer=nn.LayerNorm,
@@ -446,6 +450,16 @@ class AdaptiveMAE(nn.Module):
             sim_loss += mse.mean(dim=-1).sum() 
             
             total_masked_tokens += subset_targets.shape[0]
+
+        if total_masked_tokens == 0:
+            valid_tokens = int((~is_padding).sum().item())
+            masked_tokens = int(loss_mask.sum().item())
+            raise NoMaskedTokensError(
+                "No masked tokens are available for MAE reconstruction loss "
+                f"(valid_tokens={valid_tokens}, masked_tokens={masked_tokens}). "
+                "This can happen when dynamic tokenization produces too few patches, "
+                "for example with nearly empty or all-zero inputs."
+            )
 
         total_loss = sim_loss / total_masked_tokens
         return total_loss

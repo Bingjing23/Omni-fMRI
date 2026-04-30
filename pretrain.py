@@ -16,12 +16,13 @@ from torch.cuda.amp import GradScaler, autocast
 from functools import partial
 
 
-from src.models.mae_model import AdaptiveMAE
+from src.models.mae_model import AdaptiveMAE, NoMaskedTokensError
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 from src.data.pretrain_dataset import fMRIDataset
 import warnings
 from src.utils.cli_app import YamlBackedCliApp
 from src.utils.config_overrides import add_pretrain_override_args, apply_pretrain_overrides
+from src.utils.logging_utils import WandbLogger
 warnings.filterwarnings("ignore", message=".*torch.cuda.amp.autocast.*")
 
 
@@ -132,27 +133,26 @@ def move_to_device(batch, device):
 def create_model(config):
     model_config = config['model']
 
-    if model_config['model_chose'] == 'mae':
-        model = AdaptiveMAE(
-            img_size=tuple(model_config['img_size']),
-            patch_size=model_config['patch_size'],
-            in_chans=model_config['in_chans'],
-            embed_dim=model_config['embed_dim'],
-            depth=model_config['depth'],
-            qkv_bias=model_config['qkv_bias'],
-            qk_norm=model_config['qk_norm'],
-            num_heads=model_config['num_heads'],
-            decoder_embed_dim=model_config['decoder_embed_dim'],
-            drop_path_rate=model_config['drop_path_rate'],
-            decoder_depth=model_config['decoder_depth'],
-            decoder_num_heads=model_config['decoder_num_heads'],
-            mlp_ratio=model_config['mlp_ratio'],
-            norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            mask_ratio=model_config['mask_ratio'],
-            mixed_patch_embed=TokenizedZeroConvPatchAttn3D,
-            patch_norm=model_config['enable_patch_norm'],
-            gate_attention=model_config['gate_attention']
-        )
+    model = AdaptiveMAE(
+        img_size=tuple(model_config['img_size']),
+        patch_size=model_config['patch_size'],
+        in_chans=model_config['in_chans'],
+        embed_dim=model_config['embed_dim'],
+        depth=model_config['depth'],
+        qkv_bias=model_config['qkv_bias'],
+        qk_norm=model_config['qk_norm'],
+        num_heads=model_config['num_heads'],
+        decoder_embed_dim=model_config['decoder_embed_dim'],
+        drop_path_rate=model_config['drop_path_rate'],
+        decoder_depth=model_config['decoder_depth'],
+        decoder_num_heads=model_config['decoder_num_heads'],
+        mlp_ratio=model_config['mlp_ratio'],
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        mask_ratio=model_config['mask_ratio'],
+        mixed_patch_embed=TokenizedZeroConvPatchAttn3D,
+        patch_norm=model_config['enable_patch_norm'],
+        gate_attention=model_config['gate_attention']
+    )
 
     return model
 
@@ -323,6 +323,7 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
     accum_iter = train_config['accum_iter']
     use_amp = train_config['use_amp']
     clip_grad = train_config.get('clip_grad', 1.0)
+    skipped_batches = 0
 
     optimizer.zero_grad()
     
@@ -336,13 +337,19 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
         if device is not None:
             samples = move_to_device(samples, device)
 
-        # Forward pass with mixed precision
-        with autocast(enabled=use_amp and device.type == "cuda"):
-            if config['model']['model_chose'] == 'jepa':
-                loss, sim_loss, sigreg_loss, aliment_metric = model(samples)
-            elif config['model']['model_chose'] == 'mae':
+        try:
+            # Forward pass with mixed precision
+            with autocast(enabled=use_amp and device.type == "cuda"):
                 loss, rec_loss, aux_loss = model(samples)
-            loss = loss / accum_iter    
+                loss = loss / accum_iter
+        except NoMaskedTokensError as exc:
+            skipped_batches += 1
+            optimizer.zero_grad()
+            if rank == 0:
+                msg = f"Skipping pretrain batch {data_iter_step}: {exc}"
+                print(msg)
+                log_to_file(log_file, msg)
+            continue
 
         # Backward pass
         if use_amp:
@@ -370,13 +377,7 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
             print(f"Loss is {loss_value}, stopping training")
             sys.exit(1)
 
-        if config['model']['model_chose'] == 'jepa':
-            metric_logger.update(loss=loss.item())
-            metric_logger.update(sim_loss=sim_loss.item())
-            metric_logger.update(sigreg_loss=sigreg_loss.item())
-            metric_logger.update(aliment_metric=aliment_metric.item())
-        elif config['model']['model_chose'] == 'mae':
-            metric_logger.update(loss=loss.item())
+        metric_logger.update(loss=loss.item())
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
         # if current_step % 100 == 0:
@@ -388,7 +389,12 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
 
         #     if rank == 0:
         #         visual_g = torch.cat(gathered_tensors, dim=0)
-        #         visualize_local_similarity(visual_g, rank, epoch, step=current_step, save_dir="./vis/lejepa")
+
+    if skipped_batches == len(train_loader):
+        raise RuntimeError(
+            "All pretraining batches were skipped because no masked tokens were available. "
+            "Check that inputs contain enough non-empty fMRI signal for dynamic tokenization."
+        )
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
@@ -404,6 +410,7 @@ def validate(model, val_loader, epoch, config, rank, world_size, device, log_fil
 
     metric_logger = MetricLogger(delimiter="  ")
     header = f'Validation Epoch: [{epoch}]'
+    skipped_batches = 0
 
 
     for samples in metric_logger.log_every(val_loader, 50, header):
@@ -411,21 +418,27 @@ def validate(model, val_loader, epoch, config, rank, world_size, device, log_fil
         if device is not None:
             samples = move_to_device(samples, device)
                 
-        # Forward pass
-        with autocast(enabled=config['training']['use_amp'] and device.type == "cuda"):
-            if config['model']['model_chose'] == 'jepa':
-                loss, sim_loss, sigreg_loss, aliment_metric = model(samples)
-            elif config['model']['model_chose'] == 'mae':
+        try:
+            # Forward pass
+            with autocast(enabled=config['training']['use_amp'] and device.type == "cuda"):
                 loss, _, _ = model(samples)
+        except NoMaskedTokensError as exc:
+            skipped_batches += 1
+            if rank == 0:
+                msg = f"Skipping validation batch: {exc}"
+                print(msg)
+                log_to_file(log_file, msg)
+            continue
 
-        if config['model']['model_chose'] == 'jepa':
-            metric_logger.update(loss=loss.item())
-            metric_logger.update(sim_loss=sim_loss.item())
-            metric_logger.update(sigreg_loss=sigreg_loss.item())
-            metric_logger.update(aliment_metric=aliment_metric.item())
-        elif config['model']['model_chose'] == 'mae':
-            metric_logger.update(loss=loss.item())
+        metric_logger.update(loss=loss.item())
 
+
+    if skipped_batches == len(val_loader):
+        if rank == 0:
+            msg = "Validation produced no metrics because every batch had no masked tokens."
+            print(msg)
+            log_to_file(log_file, msg)
+        return {}
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
@@ -564,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
-    parser.add_argument('--no-val', '--no_val', dest='no_val', action=argparse.BooleanOptionalAction, default=False, help='Disable validation')
+    parser.add_argument('--no-val', '--no_val', dest='no_val', action='store_true', default=False, help='Disable validation')
     parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu',
                         help='Torch device for single-process execution, e.g. cuda:0 or cpu')
     parser.add_argument('--output_dir', type=str, default=None,
@@ -696,83 +709,94 @@ class PretrainApp(YamlBackedCliApp):
             print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
 
         start_time = time.time()
+        wandb_logger = WandbLogger(config) if rank == 0 else None
 
-        for epoch in range(start_epoch, config['training']['epochs']):
-            if is_distributed and train_sampler is not None:
-                train_sampler.set_epoch(epoch)
+        try:
+            for epoch in range(start_epoch, config['training']['epochs']):
+                if is_distributed and train_sampler is not None:
+                    train_sampler.set_epoch(epoch)
 
-            # Train for one epoch
-            train_stats = train_one_epoch(
-                model, train_loader, optimizer, scheduler, scaler,
-                epoch, config, rank, world_size, device, log_file
-            )
+                # Train for one epoch
+                train_stats = train_one_epoch(
+                    model, train_loader, optimizer, scheduler, scaler,
+                    epoch, config, rank, world_size, device, log_file
+                )
 
-            is_val_epoch = not self.args.no_val and \
-                           (epoch % config['validation']['val_freq'] == 0 or 
-                            epoch == config['training']['epochs'] - 1)
+                is_val_epoch = not self.args.no_val and (
+                    epoch % config['validation']['val_freq'] == 0
+                    or epoch == config['training']['epochs'] - 1
+                )
 
-            # Validate
-            val_stats = {}
-            if is_val_epoch:
-                if len(val_loader) > 0:
-                    val_stats = validate(
-                        model, val_loader, epoch, config, rank, world_size, device, log_file
-                    )
-                else:
-                    if rank == 0:
-                        print(f"Warning: Validation skipped because val_loader is empty.")
-
-            if rank == 0:
-                log_msg = f"Epoch {epoch} Training - " + " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
-                print(log_msg)
-                log_to_file(log_file, log_msg)
-
-                is_best = False
-                if 'loss' in val_stats:
-                    val_loss = val_stats['loss']
-                    val_msg = f"Epoch {epoch} Validation - Loss: {val_loss:.4f}"
-                    print(val_msg)
-                    log_to_file(log_file, val_msg)
-
-                    if val_loss < best_loss:
-                        best_loss = val_loss
-                        is_best = True
-                        best_msg = f"--> New best validation loss: {best_loss:.4f}"
-                        print(best_msg)
-                        log_to_file(log_file, best_msg)
-
-                should_save_periodic = (epoch + 1) % config['logging']['save_freq'] == 0
-                should_save_best = is_best
-
-                if should_save_periodic or should_save_best:
-                    checkpoint_state = {
-                        'epoch': epoch + 1,
-                        'model_state_dict': model_without_ddp.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'best_loss': best_loss,
-                        'config': config,
-                    }
-                    if scaler is not None:
-                        checkpoint_state['scaler_state_dict'] = scaler.state_dict()
-
-                    if should_save_periodic:
-                        save_checkpoint(
-                            checkpoint_state,
-                            False, 
-                            checkpoint_dir,
-                            filename=f'checkpoint_epoch_{epoch}.pth'
+                # Validate
+                val_stats = {}
+                if is_val_epoch:
+                    if len(val_loader) > 0:
+                        val_stats = validate(
+                            model, val_loader, epoch, config, rank, world_size, device, log_file
                         )
-                        print(f"Saved periodic checkpoint: checkpoint_epoch_{epoch}.pth")
+                    else:
+                        if rank == 0:
+                            print(f"Warning: Validation skipped because val_loader is empty.")
 
-                    if should_save_best:
-                        save_checkpoint(
-                            checkpoint_state,
-                            True,
-                            checkpoint_dir,
-                            filename='best_checkpoint.pth' 
-                        )
-                        print(f"Saved best checkpoint: best_checkpoint.pth")
+                if rank == 0:
+                    log_msg = f"Epoch {epoch} Training - " + " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
+                    print(log_msg)
+                    log_to_file(log_file, log_msg)
+                    wandb_logger.log(train_stats, step=epoch, prefix="train")
+
+                    is_best = False
+                    if 'loss' in val_stats:
+                        val_loss = val_stats['loss']
+                        val_msg = f"Epoch {epoch} Validation - Loss: {val_loss:.4f}"
+                        print(val_msg)
+                        log_to_file(log_file, val_msg)
+                        wandb_logger.log(val_stats, step=epoch, prefix="val")
+
+                        if val_loss < best_loss:
+                            best_loss = val_loss
+                            is_best = True
+                            best_msg = f"--> New best validation loss: {best_loss:.4f}"
+                            print(best_msg)
+                            log_to_file(log_file, best_msg)
+                            wandb_logger.log({"best_loss": best_loss}, step=epoch)
+
+                    should_save_periodic = (epoch + 1) % config['logging']['save_freq'] == 0
+                    should_save_best = is_best
+
+                    if should_save_periodic or should_save_best:
+                        checkpoint_state = {
+                            'epoch': epoch + 1,
+                            'model_state_dict': model_without_ddp.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'scheduler_state_dict': scheduler.state_dict(),
+                            'best_loss': best_loss,
+                            'config': config,
+                        }
+                        if scaler is not None:
+                            checkpoint_state['scaler_state_dict'] = scaler.state_dict()
+
+                        if should_save_periodic:
+                            save_checkpoint(
+                                checkpoint_state,
+                                False,
+                                checkpoint_dir,
+                                filename=f'checkpoint_epoch_{epoch}.pth'
+                            )
+                            print(f"Saved periodic checkpoint: checkpoint_epoch_{epoch}.pth")
+                            wandb_logger.log({"checkpoint_epoch": epoch + 1}, step=epoch)
+
+                        if should_save_best:
+                            save_checkpoint(
+                                checkpoint_state,
+                                True,
+                                checkpoint_dir,
+                                filename='best_checkpoint.pth'
+                            )
+                            print(f"Saved best checkpoint: best_checkpoint.pth")
+        finally:
+            if wandb_logger is not None:
+                wandb_logger.finish()
+
         # Training finished
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -797,4 +821,3 @@ class PretrainApp(YamlBackedCliApp):
 
 if __name__ == '__main__':
     PretrainApp.main()
-

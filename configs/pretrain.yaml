@@ -45,26 +45,11 @@ model:
   downstream: false
   gate_attention: "elementwise"
 
-  # MAE SETTINGS
   decoder_embed_dim: 512
   decoder_depth: 8
   decoder_num_heads: 16
   mask_ratio: 0.75
   enable_patch_norm: false
-
-  # JEPA SETTINGS
-  predictor_embed_dim: 192
-  predictor_depth: 6
-  predictor_num_heads: 8
-  lamda: 0.05
-  num_slices: 1024
-  n_points: 17
-  use_patch_loss: false
-  use_flatten_tokens: false
-  sample_ratio: 1.0
-  proj_dim: 128
-
-  model_chose: mae  # jepa / mae
 
 # --- Training Settings ---
 training:

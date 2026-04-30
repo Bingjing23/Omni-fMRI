@@ -3,9 +3,11 @@ import argparse
 import numpy as np
 import torch
 import nibabel as nib
+import yaml
 from torch.utils.data import DataLoader
 from scipy.ndimage import gaussian_filter
-from finetune import create_model, load_config, ADNIDataset, HCPtaskDataset, fMRITaskDataset1
+from finetune import create_model
+from src.data.downstream_dataset import fMRITaskDataset1
 
 
 AFFINE_TARGET = np.array([
@@ -134,7 +136,8 @@ def main():
     parser.add_argument('--steps', type=int, default=50, help='Integration steps for IG')
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    with open(args.config, "r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
     os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -158,7 +161,19 @@ def main():
     print("Loading Dataset...")
 
 
-    test_dataset = HCPtaskDataset(txt_path="")
+    data_config = config["data"]
+    task_config = config["task"]
+    test_dataset = fMRITaskDataset1(
+        data_root=data_config["data_root"],
+        datasets=data_config["datasets"],
+        split_suffixes=data_config.get("test_split_suffixes", ["test"]),
+        crop_length=data_config["input_seq_len"],
+        label_csv_path=task_config["csv"],
+        target_col=task_config["target_col"],
+        subject_id_regex=data_config["subject_id_regex"],
+        task_type=task_config["task_type"],
+        subject_list_txt=data_config["test_txt"],
+    )
         
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     

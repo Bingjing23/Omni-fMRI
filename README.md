@@ -35,8 +35,8 @@ pip install -r requirements.txt
 
 ```text
 configs/
-  finetune.yaml          # Downstream fine-tuning config
-  pretrain.yaml          # Pre-training config
+  finetune.yaml          # Default downstream fine-tuning values
+  pretrain.yaml          # Default pre-training values
 data_preparation/
   preprocessing.py       # NIfTI to segmented NPZ preprocessing pipeline
   MNI152_T1_1mm_brain_mask.nii.gz
@@ -136,7 +136,7 @@ For a folder of NPZ files:
 ```bash
 python extract_feat.py \
   /path/to/input_npz_or_folder \
-  --checkpoint /path/to/checkpoint.pth \
+  --checkpoint checkpoint_epoch_32.pth \
   --output-dir /path/to/output_tokens
 ```
 
@@ -145,14 +145,14 @@ For a single NPZ file:
 ```bash
 python extract_feat.py \
   /path/to/sample.npz \
-  --checkpoint /path/to/checkpoint.pth \
+  --checkpoint checkpoint_epoch_32.pth \
   --output-dir /path/to/output_tokens
 ```
 
 Useful options:
 
 ```bash
---checkpoint /path/to/checkpoint.pth  # Override checkpoint path
+--checkpoint checkpoint_epoch_32.pth   # Pre-trained checkpoint used for extraction
 --npz-key arr                         # Array key inside NPZ; default is the first key
 --layout dhwt                         # Input layout: dhwt, cdhw, or auto
 --start-frame 0                       # Start frame when DHWT has more than 40 frames
@@ -177,12 +177,9 @@ patch_coords  # Shape: (num_patches, 3), top-left voxel coords in (z, y, x)
 
 ## Training
 
-The training entry points are now CLI-first:
+The training entry points are CLI-first. Pass run-specific values as command-line arguments; any argument you omit falls back to the repository defaults.
 
-- `pretrain.py`, `finetune.py`, `extract_feat.py`, and `data_preparation/preprocessing.py` use object-oriented CLI app entry points.
-- YAML files in `configs/` remain the default source of values.
-- Prefer overriding behavior from the command line instead of editing YAML.
-- Use `--add-arg key=value` or `--add_arg key=value` for dotted nested overrides.
+Use explicit arguments for common settings and `--add-arg key=value` or `--add_arg key=value` for dotted nested overrides.
 
 Examples:
 
@@ -209,54 +206,70 @@ data_root/
 Start pre-training:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 CONFIG_FILE=configs/pretrain.yaml OUTPUT_DIR=outputs/pretrain \
-  bash scripts/pretrain.sh \
+CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 \
+bash scripts/pretrain.sh \
+  --output_dir outputs/pretrain \
   --data_root /path/to/data_root \
   --datasets HCP ABIDE \
+  --batch_size 8 \
+  --epochs 400 \
   --add-arg model.thresholds='[0.23]' training.warmup_epochs=5
 ```
 
 ### Downstream Evaluation
 
-Directory mode example:
-
-```yaml
-task:
-  csv: /path/to/data_csv
-
-data:
-  data_root: /path/to/data_root
-  datasets: ["HCP"]
-  mode: "directory"
-```
-
-TXT mode example:
-
-```yaml
-task:
-  csv: /path/to/data_csv
-
-data:
-  train_txt: /path/to/train_txt
-  val_txt: /path/to/val_txt
-  test_txt: /path/to/test_txt
-  mode: "txt"
-```
-
-Start downstream training:
+Directory mode:
 
 ```bash
 bash scripts/finetune.sh \
-  --pretrained_checkpoint /path/to/pretrain_checkpoint.pth \
+  --pretrained_checkpoint checkpoint_epoch_32.pth \
   --data_root /path/to/data_root \
   --task_csv /path/to/data_csv \
+  --datasets HCP \
   --data_mode directory \
+  --target_col gender \
+  --subject_id_regex '(\\d{7})' \
   --task_type classification \
   --num_classes 2 \
   --batch_size 16
 ```
 
-The YAML file still provides fallback defaults, but the recommended workflow is to leave `configs/finetune.yaml` as a baseline and inject run-specific values from CLI.
+TXT mode:
+
+```bash
+bash scripts/finetune.sh \
+  --pretrained_checkpoint checkpoint_epoch_32.pth \
+  --data_root /path/to/data_root \
+  --task_csv /path/to/data_csv \
+  --data_mode txt \
+  --train_txt /path/to/train_txt \
+  --val_txt /path/to/val_txt \
+  --test_txt /path/to/test_txt \
+  --target_col gender \
+  --subject_id_regex '(\\d{7})' \
+  --task_type classification \
+  --num_classes 2 \
+  --batch_size 16
+```
+
+In `txt` mode, each text file must be provided explicitly and may contain either `.npz` file paths or directories containing `.npz` files. `--datasets` is only used by `directory` mode. Use `--subject_id_regex` to extract the subject id from each file or parent folder; the first capture group is used, or a named group called `subject` if present.
+
+For regression tasks, switch the task arguments from the command line:
+
+```bash
+bash scripts/finetune.sh \
+  --pretrained_checkpoint checkpoint_epoch_32.pth \
+  --data_root /path/to/data_root \
+  --task_csv /path/to/data_csv \
+  --datasets ABIDE \
+  --data_mode directory \
+  --target_col age \
+  --subject_id_regex '(\\d{7})' \
+  --task_type regression \
+  --num_classes 1
+```
+
+For regression, label mean and standard deviation are computed automatically from the training split and written into the run config.
 
 ## Docker
 
@@ -299,7 +312,17 @@ If you want to mount real data and outputs for training, add:
 -v /path/to/outputs:/outputs
 ```
 
-and then point configs to `/data` and `/outputs` inside the container.
+and then pass `/data` and `/outputs` from the command line, for example:
+
+```bash
+bash scripts/finetune.sh \
+  --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth \
+  --data_root /data \
+  --task_csv /data/labels.csv \
+  --target_col gender \
+  --subject_id_regex '(\\d{7})' \
+  --output_dir /outputs/finetune
+```
 
 ### GPU Training In Docker
 
@@ -320,16 +343,15 @@ docker run --rm -it \
 Inside the container, use `bash`, not `sh`, because the launcher scripts rely on Bash arrays:
 
 ```bash
-bash scripts/pretrain.sh
-# or
-bash scripts/finetune.sh
+bash scripts/pretrain.sh --data_root /data --datasets HCP ABIDE --output_dir /outputs/pretrain
+bash scripts/finetune.sh --data_root /data --task_csv /data/labels.csv --target_col gender --subject_id_regex '(\\d{7})' --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth --output_dir /outputs/finetune
 ```
 
 ### Docker Smoke Test
 
 The repository includes a non-training preflight that creates dummy data and validates:
 
-- config loading
+- default argument loading
 - model construction
 - dataset discovery
 - dataloader output shapes

@@ -108,11 +108,6 @@ def as_3tuple(value: object) -> tuple[int, int, int]:
 
 def create_model(config: dict) -> nn.Module:
     model_config = config["model"]
-    model_chose = model_config.get("model_chose", "mae")
-    if model_chose != "mae":
-        raise ValueError(
-            f"This extractor currently supports MAE checkpoints; checkpoint config has model_chose={model_chose!r}"
-        )
 
     return AdaptiveMAE(
         img_size=as_3tuple(model_config["img_size"]),
@@ -361,4 +356,3 @@ class ExtractFeaturesApp(YamlBackedCliApp):
 
 if __name__ == "__main__":
     ExtractFeaturesApp.main()
-
