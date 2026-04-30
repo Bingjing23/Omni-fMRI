@@ -151,13 +151,13 @@ python finetune.py --add-arg training.freeze_encoder=true data.batch_size=8
 
 ### Docker
 
-Build locally:
+Pull the published image:
 
 ```bash
-docker build -t omnifmri:local .
+docker pull onemore1/onmi-fmri:py3.11-pytorch2.4.1-cuda12.4-cudnn9
 ```
 
-Run with GPU, mounted code, data, and outputs:
+Run it with GPU, mounted code, data, and outputs:
 
 ```bash
 docker run --rm -it \
@@ -167,20 +167,37 @@ docker run --rm -it \
   -v /path/to/data_root:/data \
   -v /path/to/outputs:/outputs \
   -w /workspace \
-  omnifmri:local \
+  onemore1/onmi-fmri:py3.11-pytorch2.4.1-cuda12.4-cudnn9 \
   bash
 ```
 
-Published image:
+Inside the container, run commands with paths mounted above, for example:
 
 ```bash
-docker pull onemore1/onmi-fmri:py3.11-pytorch2.4.1-cuda12.4-cudnn9
+bash scripts/finetune.sh \
+  --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth \
+  --data_root /data \
+  --task_csv /data/labels.csv \
+  --target_col gender \
+  --subject_id_regex '(\\d{7})' \
+  --output_dir /outputs/finetune
 ```
 
 Before real training, run the lightweight pipeline check:
 
 ```bash
-python scripts/docker_smoke_test.py --work-dir /tmp/omnifmri-smoke
+docker run --rm \
+  --ipc=host \
+  -v "$(pwd):/workspace" \
+  -w /workspace \
+  onemore1/onmi-fmri:py3.11-pytorch2.4.1-cuda12.4-cudnn9 \
+  python scripts/docker_smoke_test.py --work-dir /tmp/omnifmri-smoke
+```
+
+To rebuild the image locally instead of pulling Docker Hub:
+
+```bash
+docker build -t omnifmri:local .
 ```
 
 ## Repository Layout
