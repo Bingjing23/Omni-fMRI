@@ -41,8 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
-        help="Checkpoint path",
+        default=Path("pretrain_checkpoint/checkpoint_epoch_32.pth"),
+        help="Checkpoint path (default: pretrain_checkpoint/checkpoint_epoch_32.pth)",
     )
     parser.add_argument(
         "--config",

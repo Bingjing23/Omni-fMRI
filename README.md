@@ -30,7 +30,7 @@ pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https
 pip install -r requirements.txt
 ```
 
-Pre-trained weights are available at https://huggingface.co/OneMore1/Omni-fMRI. The examples below use `checkpoint_epoch_32.pth`.
+Pre-trained weights are available at https://huggingface.co/OneMore1/Omni-fMRI. Put the released checkpoint at `pretrain_checkpoint/checkpoint_epoch_32.pth`; feature extraction and fine-tuning use this path by default.
 
 ### Feature Extraction
 
@@ -39,11 +39,10 @@ Use this when you want to apply the released Omni-fMRI checkpoint directly and e
 ```bash
 python extract_feat.py \
   /path/to/input_npz_or_folder \
-  --checkpoint checkpoint_epoch_32.pth \
   --output-dir /path/to/output_tokens
 ```
 
-Inputs are `.npz` files shaped `(96, 96, 96, 40)` by default. Useful options: `--npz-key arr`, `--layout dhwt`, `--layout cdhw`, `--pad-short`, `--overwrite`, `--no-recursive`.
+Inputs are `.npz` files shaped `(96, 96, 96, 40)` by default. Useful options: `--checkpoint /path/to/checkpoint.pth`, `--npz-key arr`, `--layout dhwt`, `--layout cdhw`, `--pad-short`, `--overwrite`, `--no-recursive`.
 
 Each output contains `cls_token`, `patch_tokens`, and `patch_coords`.
 
@@ -110,7 +109,6 @@ Directory mode:
 
 ```bash
 bash scripts/finetune.sh \
-  --pretrained_checkpoint checkpoint_epoch_32.pth \
   --output_dir outputs/finetune \
   --data_root /path/to/data_root \
   --data_mode directory \
@@ -126,7 +124,6 @@ TXT mode does not use `--datasets`:
 
 ```bash
 bash scripts/finetune.sh \
-  --pretrained_checkpoint checkpoint_epoch_32.pth \
   --output_dir outputs/finetune \
   --data_root /path/to/data_root \
   --data_mode txt \
@@ -141,6 +138,8 @@ bash scripts/finetune.sh \
 ```
 
 For regression, use `--task_type regression --num_classes 1 --target_col age`. Label mean and standard deviation are computed automatically from the training split.
+
+Fine-tuning loads `pretrain_checkpoint/checkpoint_epoch_32.pth` by default. Use `--pretrained_checkpoint /path/to/checkpoint.pth` to override it.
 
 All training entry points are CLI-first. Omitted arguments fall back to defaults in `configs/*.yaml`. For uncommon options, use dotted overrides:
 
@@ -175,7 +174,6 @@ Inside the container, run commands with paths mounted above, for example:
 
 ```bash
 bash scripts/finetune.sh \
-  --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth \
   --data_root /data \
   --task_csv /data/labels.csv \
   --target_col gender \
@@ -198,6 +196,15 @@ To rebuild the image locally instead of pulling Docker Hub:
 
 ```bash
 docker build -t omnifmri:local .
+docker run --rm -it \
+  --gpus all \
+  --ipc=host \
+  -v "$(pwd):/workspace" \
+  -v /path/to/data_root:/data \
+  -v /path/to/outputs:/outputs \
+  -w /workspace \
+  omnifmri:local \
+  bash
 ```
 
 ## Repository Layout
@@ -205,6 +212,7 @@ docker build -t omnifmri:local .
 ```text
 configs/                  # Default YAML values
 data_preparation/          # NIfTI to NPZ preprocessing
+pretrain_checkpoint/       # Default location for released checkpoints
 scripts/                   # Launchers and smoke test
 src/data/                  # Pre-training and downstream datasets
 src/models/                # MAE and ViT modules
