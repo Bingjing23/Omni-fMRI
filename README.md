@@ -30,7 +30,7 @@ pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https
 pip install -r requirements.txt
 ```
 
-Pre-trained weights are available at https://huggingface.co/OneMore1/Omni-fMRI. Put the released checkpoint at `pretrain_checkpoint/checkpoint_epoch_32.pth`; feature extraction and fine-tuning use this path by default.
+Pre-trained weights are available at https://huggingface.co/OneMore1/Omni-fMRI. Put the released checkpoint at `pretrain_checkpoint/checkpoint.pth`; feature extraction and fine-tuning use this path by default.
 
 ### Feature Extraction
 
