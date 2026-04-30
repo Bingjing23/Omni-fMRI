@@ -11,8 +11,11 @@ experiment:
 data:
   data_root: null
   datasets: ["HCP", "ISYB", "CHCP", "ABCD", "PIOP1", "PIOP2", "PPMI"]
+  mode: "directory"
   train_split_suffixes: ["train_40"]
   val_split_suffixes: ["val_40"]
+  train_txt: null
+  val_txt: null
   input_seq_len: 40 # Temporal length to crop (T dimension)
 
   # DataLoader settings

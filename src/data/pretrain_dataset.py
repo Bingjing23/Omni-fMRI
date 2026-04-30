@@ -1,10 +1,9 @@
 import os
 import glob
 import numpy as np
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from pathlib import Path
 import torch
 from torch.utils.data import Dataset
-import random
 
 
 def global_zscore_nonzero(data: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -78,3 +77,43 @@ class fMRIDataset(Dataset):
         data_tensor = data_tensor.permute(3, 0, 1, 2)
 
         return data_tensor
+
+
+class fMRITxtDataset(fMRIDataset):
+    """Pre-training dataset loaded from an explicit txt list of files or folders."""
+
+    def __init__(self, data_root, subject_list_txt, crop_length=40, downstream=False):
+        if not subject_list_txt:
+            raise ValueError("TXT mode requires a train_txt or val_txt path.")
+
+        self.file_paths = self._load_files_from_txt(subject_list_txt, data_root)
+        self.crop_length = crop_length
+        self.downstream = downstream
+
+        print(f"Dataset Mode: TXT List ({subject_list_txt})")
+        print(f"Dataset loaded. Total files found: {len(self.file_paths)}")
+
+    def _resolve_txt_entry(self, entry: str, data_root: str) -> Path:
+        path = Path(entry).expanduser()
+        if not path.is_absolute():
+            path = Path(data_root).expanduser() / path
+        return path
+
+    def _load_files_from_txt(self, txt_path: str, data_root: str) -> list[str]:
+        if not os.path.exists(txt_path):
+            raise FileNotFoundError(f"TXT file not found: {txt_path}")
+
+        with open(txt_path, "r", encoding="utf-8") as handle:
+            entries = [line.strip() for line in handle if line.strip()]
+
+        file_paths: list[str] = []
+        for entry in entries:
+            path = self._resolve_txt_entry(entry, data_root)
+            if path.is_dir():
+                file_paths.extend(sorted(glob.glob(str(path / "**" / "*.npz"), recursive=True)))
+            elif path.is_file() and path.suffix == ".npz":
+                file_paths.append(str(path))
+            else:
+                print(f"Warning: TXT entry not found or not an .npz file/folder: {path}")
+
+        return file_paths

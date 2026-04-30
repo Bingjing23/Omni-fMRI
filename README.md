@@ -19,119 +19,22 @@ Official implementation of Omni-fMRI, a universal atlas-free fMRI foundation mod
 
 </div>
 
-## Installation
+## Quick Start
 
-The repository targets Python 3.11 and PyTorch 2.4.1 with CUDA 12.4:
+### Installation
 
 ```bash
 conda create -n omnifmri python=3.11
 conda activate omnifmri
-
 pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
 ```
 
-## Project Structure
+Pre-trained weights are available at https://huggingface.co/OneMore1/Omni-fMRI. The examples below use `checkpoint_epoch_32.pth`.
 
-```text
-configs/
-  finetune.yaml          # Default downstream fine-tuning values
-  pretrain.yaml          # Default pre-training values
-data_preparation/
-  preprocessing.py       # NIfTI to segmented NPZ preprocessing pipeline
-  MNI152_T1_1mm_brain_mask.nii.gz
-scripts/
-  docker_smoke_test.py   # Dummy-data Docker preflight
-  finetune.sh            # Torchrun launcher for downstream tasks
-  pretrain.sh            # Torchrun launcher for pre-training
-src/
-  data/                  # Dataset loaders
-  models/                # Model architecture
-  utils/                 # Config, logging, optimization, distributed helpers
-extract_feat.py          # Extract CLS and patch tokens from NPZ inputs
-finetune.py              # Main fine-tuning entry point
-pretrain.py              # Main pre-training entry point
-heatmap_visualize.py     # Heatmap visualization
-visual_3d.py             # 3D visualization
-```
+### Feature Extraction
 
-## Data Preparation
-
-Use [data_preparation/preprocessing.py](data_preparation/preprocessing.py) to convert raw NIfTI files into the segmented NPZ format used by training and feature extraction.
-
-The script does the following:
-
-- recursively scans an input directory for `.nii` or `.nii.gz` files
-- symmetrically pads or crops spatial dimensions to `(96, 96, 96)` by default
-- preserves world coordinates by updating the affine after padding or cropping
-- applies Z-score normalization to non-zero voxels
-- splits 4D time series into fixed-length segments, `40` frames by default
-- writes compressed `.npz` outputs with the segment data, TR, affine, and metadata
-
-Basic usage:
-
-```bash
-python data_preparation/preprocessing.py \
-  --input_dir /path/to/raw_nifti_dir \
-  --output_dir /path/to/processed_npz_dir
-```
-
-Common options:
-
-```bash
---pattern .nii.gz            # Match input filenames by suffix
---target_shape 96 96 96      # Target spatial size
---segment_length 40          # Frames per NPZ segment
---log_level INFO             # DEBUG, INFO, WARNING, ERROR
-```
-
-If your raw file names end with a custom suffix, for example `_preproc.nii.gz`, use:
-
-```bash
-python data_preparation/preprocessing.py \
-  --input_dir /path/to/raw_nifti_dir \
-  --output_dir /path/to/processed_npz_dir \
-  --pattern _preproc.nii.gz
-```
-
-Each output `.npz` contains:
-
-```text
-data           # Segment array, shape (96, 96, 96, 40) by default
-tr             # Repetition time from the source header
-affine         # Updated affine after spatial normalization
-segment_index  # Zero-based segment id for the source file
-timepoints     # [start, end) frame range from the source timeseries
-subject_id     # Stem of the source NIfTI filename
-metadata       # Original shape and padding/cropping bookkeeping
-```
-
-For pretraining or finetuning, the script does not create train/val/test splits by itself. Run it separately for each split and write into the dataset folders expected by the loaders, for example:
-
-```text
-data_root/
-  ABIDE_train_40/
-  ABIDE_val_40/
-  HCP_train_40/
-  HCP_val_40/
-```
-
-Example:
-
-```bash
-python data_preparation/preprocessing.py \
-  --input_dir /raw/HCP_train \
-  --output_dir /data/HCP_train_40 \
-  --segment_length 40
-```
-
-The training code expects NPZ inputs with spatial size `(96, 96, 96)` and 40-frame segments unless you intentionally change the model and config settings.
-
-## Extract Backbone Features
-
-`extract_feat.py` loads a pre-trained checkpoint, runs each NPZ sample through the encoder backbone, and writes one output NPZ per sample.
-
-For a folder of NPZ files:
+Use this when you want to apply the released Omni-fMRI checkpoint directly and export backbone tokens for downstream analysis.
 
 ```bash
 python extract_feat.py \
@@ -140,193 +43,121 @@ python extract_feat.py \
   --output-dir /path/to/output_tokens
 ```
 
-For a single NPZ file:
+Inputs are `.npz` files shaped `(96, 96, 96, 40)` by default. Useful options: `--npz-key arr`, `--layout dhwt`, `--layout cdhw`, `--pad-short`, `--overwrite`, `--no-recursive`.
+
+Each output contains `cls_token`, `patch_tokens`, and `patch_coords`.
+
+### Data Format
+
+Raw NIfTI files can be converted to the NPZ format used by extraction and training:
 
 ```bash
-python extract_feat.py \
-  /path/to/sample.npz \
-  --checkpoint checkpoint_epoch_32.pth \
-  --output-dir /path/to/output_tokens
+python data_preparation/preprocessing.py \
+  --input_dir /path/to/raw_nifti \
+  --output_dir /path/to/processed_npz \
+  --segment_length 40
 ```
 
-Useful options:
-
-```bash
---checkpoint checkpoint_epoch_32.pth   # Pre-trained checkpoint used for extraction
---npz-key arr                         # Array key inside NPZ; default is the first key
---layout dhwt                         # Input layout: dhwt, cdhw, or auto
---start-frame 0                       # Start frame when DHWT has more than 40 frames
---pad-short                           # Zero-pad samples shorter than 40 frames
---overwrite                           # Overwrite existing output NPZ files
---no-recursive                        # Do not recursively scan input directories
-```
-
-Input assumptions:
-
-- Default input layout is `(D, H, W, T)`, with spatial shape `(96, 96, 96)`.
-- The model expects 40 temporal frames.
-- `--layout cdhw` can be used when the input is already `(40, 96, 96, 96)`.
-
-Each output file is named like `<input_stem>_tokens.npz` and contains:
-
-```text
-cls_token     # Shape: (768,)
-patch_tokens  # Shape: (num_patches, 768)
-patch_coords  # Shape: (num_patches, 3), top-left voxel coords in (z, y, x)
-```
-
-## Training
-
-The training entry points are CLI-first. Pass run-specific values as command-line arguments; any argument you omit falls back to the repository defaults.
-
-Use explicit arguments for common settings and `--add-arg key=value` or `--add_arg key=value` for dotted nested overrides.
-
-Examples:
-
-```bash
-python pretrain.py --add-arg data.batch_size=8 training.epochs=2
-python finetune.py --add-arg task.task_type=classification data.mode=directory
-```
-
-### Pre-training
-
-Expected directory layout:
+Directory mode expects folders named `{DATASET}_{SPLIT}`:
 
 ```text
 data_root/
-  ABIDE_train_40/
-  ABIDE_val_40/
   HCP_train_40/
   HCP_val_40/
-    0010001/
-      0010001_run-1_0000-0199_1.npz
-      0010001_run-1_0000-0199_2.npz
+  ABIDE_train/
+  ABIDE_val/
+  ABIDE_test/
 ```
 
-Start pre-training:
+Pre-training defaults to `train_40/val_40`; downstream defaults to `train/val/test`.
+
+TXT mode expects one path per line. Each line can be an `.npz` file or a directory containing `.npz` files. Relative paths are resolved under `--data_root`.
+
+### Pre-training
+
+Directory mode:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 \
 bash scripts/pretrain.sh \
   --output_dir outputs/pretrain \
   --data_root /path/to/data_root \
+  --data_mode directory \
   --datasets HCP ABIDE \
   --batch_size 8 \
-  --epochs 400 \
-  --add-arg model.thresholds='[0.23]' training.warmup_epochs=5
+  --epochs 400
 ```
 
-### Downstream Evaluation
+TXT mode does not use `--datasets`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 \
+bash scripts/pretrain.sh \
+  --output_dir outputs/pretrain \
+  --data_root /path/to/data_root \
+  --data_mode txt \
+  --train_txt /path/to/train.txt \
+  --val_txt /path/to/val.txt \
+  --batch_size 8 \
+  --epochs 400
+```
+
+### Downstream Fine-tuning
+
+`--task_csv` must contain a `Subject` column and the selected `--target_col`.
 
 Directory mode:
 
 ```bash
 bash scripts/finetune.sh \
   --pretrained_checkpoint checkpoint_epoch_32.pth \
+  --output_dir outputs/finetune \
   --data_root /path/to/data_root \
-  --task_csv /path/to/data_csv \
-  --datasets HCP \
   --data_mode directory \
-  --target_col gender \
-  --subject_id_regex '(\\d{7})' \
-  --task_type classification \
-  --num_classes 2 \
-  --batch_size 16
-```
-
-TXT mode:
-
-```bash
-bash scripts/finetune.sh \
-  --pretrained_checkpoint checkpoint_epoch_32.pth \
-  --data_root /path/to/data_root \
-  --task_csv /path/to/data_csv \
-  --data_mode txt \
-  --train_txt /path/to/train_txt \
-  --val_txt /path/to/val_txt \
-  --test_txt /path/to/test_txt \
-  --target_col gender \
-  --subject_id_regex '(\\d{7})' \
-  --task_type classification \
-  --num_classes 2 \
-  --batch_size 16
-```
-
-In `txt` mode, each text file must be provided explicitly and may contain either `.npz` file paths or directories containing `.npz` files. `--datasets` is only used by `directory` mode. Use `--subject_id_regex` to extract the subject id from each file or parent folder; the first capture group is used, or a named group called `subject` if present.
-
-For regression tasks, switch the task arguments from the command line:
-
-```bash
-bash scripts/finetune.sh \
-  --pretrained_checkpoint checkpoint_epoch_32.pth \
-  --data_root /path/to/data_root \
-  --task_csv /path/to/data_csv \
   --datasets ABIDE \
-  --data_mode directory \
-  --target_col age \
+  --task_csv /path/to/labels.csv \
+  --target_col gender \
   --subject_id_regex '(\\d{7})' \
-  --task_type regression \
-  --num_classes 1
+  --task_type classification \
+  --num_classes 2
 ```
 
-For regression, label mean and standard deviation are computed automatically from the training split and written into the run config.
+TXT mode does not use `--datasets`:
 
-## Docker
+```bash
+bash scripts/finetune.sh \
+  --pretrained_checkpoint checkpoint_epoch_32.pth \
+  --output_dir outputs/finetune \
+  --data_root /path/to/data_root \
+  --data_mode txt \
+  --train_txt /path/to/train.txt \
+  --val_txt /path/to/val.txt \
+  --test_txt /path/to/test.txt \
+  --task_csv /path/to/labels.csv \
+  --target_col gender \
+  --subject_id_regex '(\\d{7})' \
+  --task_type classification \
+  --num_classes 2
+```
 
-### Build The Image
+For regression, use `--task_type regression --num_classes 1 --target_col age`. Label mean and standard deviation are computed automatically from the training split.
 
-Run from the repository root:
+All training entry points are CLI-first. Omitted arguments fall back to defaults in `configs/*.yaml`. For uncommon options, use dotted overrides:
+
+```bash
+python pretrain.py --add-arg model.thresholds='[0.23]' training.warmup_epochs=5
+python finetune.py --add-arg training.freeze_encoder=true data.batch_size=8
+```
+
+### Docker
+
+Build locally:
 
 ```bash
 docker build -t omnifmri:local .
 ```
 
-### Start A Bash Shell
-
-Linux or macOS:
-
-```bash
-docker run --rm -it \
-  --ipc=host \
-  -v "$(pwd):/workspace" \
-  -w /workspace \
-  omnifmri:local \
-  bash
-```
-
-PowerShell:
-
-```powershell
-docker run --rm -it `
-  --ipc=host `
-  -v "${PWD}:/workspace" `
-  -w /workspace `
-  omnifmri:local `
-  bash
-```
-
-If you want to mount real data and outputs for training, add:
-
-```text
--v /path/to/data_root:/data
--v /path/to/outputs:/outputs
-```
-
-and then pass `/data` and `/outputs` from the command line, for example:
-
-```bash
-bash scripts/finetune.sh \
-  --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth \
-  --data_root /data \
-  --task_csv /data/labels.csv \
-  --target_col gender \
-  --subject_id_regex '(\\d{7})' \
-  --output_dir /outputs/finetune
-```
-
-### GPU Training In Docker
-
-When you are ready to train on GPU, add `--gpus all`:
+Run with GPU, mounted code, data, and outputs:
 
 ```bash
 docker run --rm -it \
@@ -340,51 +171,31 @@ docker run --rm -it \
   bash
 ```
 
-Inside the container, use `bash`, not `sh`, because the launcher scripts rely on Bash arrays:
-
-```bash
-bash scripts/pretrain.sh --data_root /data --datasets HCP ABIDE --output_dir /outputs/pretrain
-bash scripts/finetune.sh --data_root /data --task_csv /data/labels.csv --target_col gender --subject_id_regex '(\\d{7})' --pretrained_checkpoint /workspace/checkpoint_epoch_32.pth --output_dir /outputs/finetune
-```
-
-### Docker Smoke Test
-
-The repository includes a non-training preflight that creates dummy data and validates:
-
-- default argument loading
-- model construction
-- dataset discovery
-- dataloader output shapes
-
-Run it inside the container:
-
-```bash
-python scripts/docker_smoke_test.py --work-dir /tmp/omnifmri-smoke
-```
-
-This does not launch real training and does not require real data. It is intended to verify that the Docker runtime and the basic pipeline wiring are healthy before you run on GPUs.
-
-### Published Image
+Published image:
 
 ```bash
 docker pull onemore1/onmi-fmri:py3.11-pytorch2.4.1-cuda12.4-cudnn9
 ```
 
-The published image uses the same runtime layout. You can launch it with the same `docker run ... bash` commands above.
+Before real training, run the lightweight pipeline check:
 
-At the time of writing, `onemore1/onmi-fmri:latest` is not available, so prefer the explicit tag above.
+```bash
+python scripts/docker_smoke_test.py --work-dir /tmp/omnifmri-smoke
+```
 
-## Model Checkpoints
+## Repository Layout
 
-Pre-trained weights are available on Hugging Face:
-
-https://huggingface.co/OneMore1/Omni-fMRI
-
-## Docker Image
-
-Docker Hub:
-
-https://hub.docker.com/r/onemore1/onmi-fmri
+```text
+configs/                  # Default YAML values
+data_preparation/          # NIfTI to NPZ preprocessing
+scripts/                   # Launchers and smoke test
+src/data/                  # Pre-training and downstream datasets
+src/models/                # MAE and ViT modules
+src/utils/                 # CLI, logging, optimizer helpers
+extract_feat.py            # Backbone feature extraction
+pretrain.py                # MAE pre-training
+finetune.py                # Downstream fine-tuning
+```
 
 ## Citation
 

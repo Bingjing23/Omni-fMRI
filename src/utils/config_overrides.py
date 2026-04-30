@@ -44,8 +44,11 @@ def add_pretrain_override_args(parser):
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--data_root", type=str, default=None)
     parser.add_argument("--datasets", nargs="+", default=None)
+    parser.add_argument("--data_mode", type=str, default=None)
     parser.add_argument("--train_split_suffixes", nargs="+", default=None)
     parser.add_argument("--val_split_suffixes", nargs="+", default=None)
+    parser.add_argument("--train_txt", type=str, default=None)
+    parser.add_argument("--val_txt", type=str, default=None)
     parser.add_argument("--input_seq_len", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--num_workers", type=int, default=None)
@@ -95,11 +98,8 @@ def add_finetune_override_args(parser):
     parser.add_argument("--task_type", type=str, default=None)
     parser.add_argument("--target_col", type=str, default=None)
     parser.add_argument("--num_classes", type=int, default=None)
-    parser.add_argument("--data_mode", type=str, default=None)
     parser.add_argument("--subject_id_regex", type=str, default=None)
     parser.add_argument("--test_split_suffixes", nargs="+", default=None)
-    parser.add_argument("--train_txt", type=str, default=None)
-    parser.add_argument("--val_txt", type=str, default=None)
     parser.add_argument("--test_txt", type=str, default=None)
     parser.add_argument("--global_pool", type=str, default=None)
     parser.add_argument("--fusion_mode", type=str, default=None)
@@ -115,8 +115,11 @@ def apply_pretrain_overrides(config, args):
     data_map = {
         "data_root": "data_root",
         "datasets": "datasets",
+        "data_mode": "mode",
         "train_split_suffixes": "train_split_suffixes",
         "val_split_suffixes": "val_split_suffixes",
+        "train_txt": "train_txt",
+        "val_txt": "val_txt",
         "input_seq_len": "input_seq_len",
         "batch_size": "batch_size",
         "num_workers": "num_workers",
@@ -170,11 +173,8 @@ def apply_finetune_overrides(config, args):
         "num_classes": "num_classes",
     }
     data_map = {
-        "data_mode": "mode",
         "subject_id_regex": "subject_id_regex",
         "test_split_suffixes": "test_split_suffixes",
-        "train_txt": "train_txt",
-        "val_txt": "val_txt",
         "test_txt": "test_txt",
     }
     model_map = {"global_pool": "global_pool", "fusion_mode": "fusion_mode"}

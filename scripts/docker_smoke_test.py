@@ -62,6 +62,14 @@ def create_dummy_data(root: Path) -> Path:
     (root / "train.txt").write_text(str(root / "ABIDE_train" / SUBJECT_DIR) + "\n", encoding="utf-8")
     (root / "val.txt").write_text(str(root / "ABIDE_val" / SUBJECT_DIR) + "\n", encoding="utf-8")
     (root / "test.txt").write_text(str(root / "ABIDE_test" / SUBJECT_DIR) + "\n", encoding="utf-8")
+    (root / "pretrain_train.txt").write_text(
+        str(root / "ABIDE_train_40" / SUBJECT_DIR) + "\n",
+        encoding="utf-8",
+    )
+    (root / "pretrain_val.txt").write_text(
+        str(root / "ABIDE_val_40" / SUBJECT_DIR) + "\n",
+        encoding="utf-8",
+    )
 
     labels_csv = root / "labels.csv"
     labels_csv.write_text(f"Subject,gender,age\n{SUBJECT_ID},M,21\n", encoding="utf-8")
@@ -76,6 +84,16 @@ def make_pretrain_config(data_root: Path, output_root: Path) -> dict:
     config["data"]["batch_size"] = 1
     config["data"]["num_workers"] = 0
     config["data"]["pin_memory"] = False
+    return config
+
+
+def make_pretrain_txt_config(data_root: Path, output_root: Path) -> dict:
+    config = make_pretrain_config(data_root, output_root)
+    config["experiment"]["output_dir"] = str(output_root / "pretrain_txt")
+    config["data"]["mode"] = "txt"
+    config["data"]["datasets"] = None
+    config["data"]["train_txt"] = str(data_root / "pretrain_train.txt")
+    config["data"]["val_txt"] = str(data_root / "pretrain_val.txt")
     return config
 
 
@@ -155,6 +173,7 @@ def main() -> None:
     print(f"Dummy data created under {data_root}")
 
     validate_pretrain_pipeline(make_pretrain_config(data_root, output_root))
+    validate_pretrain_pipeline(make_pretrain_txt_config(data_root, output_root))
     validate_finetune_pipeline(make_finetune_config(data_root, labels_csv, output_root))
     validate_finetune_pipeline(make_finetune_txt_config(data_root, labels_csv, output_root))
 

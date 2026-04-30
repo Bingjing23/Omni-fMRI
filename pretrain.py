@@ -18,7 +18,7 @@ from functools import partial
 
 from src.models.mae_model import AdaptiveMAE, NoMaskedTokensError
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
-from src.data.pretrain_dataset import fMRIDataset
+from src.data.pretrain_dataset import fMRIDataset, fMRITxtDataset
 import warnings
 from src.utils.cli_app import YamlBackedCliApp
 from src.utils.config_overrides import add_pretrain_override_args, apply_pretrain_overrides
@@ -209,24 +209,40 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
 def create_dataloaders(config, is_distributed, rank, world_size):
     """Create train and validation dataloaders"""
     data_config = config['data']
+    data_mode = data_config.get('mode', 'directory')
 
-    # Training dataset
-    train_dataset = fMRIDataset(
-        data_root=data_config['data_root'],
-        datasets=data_config['datasets'],
-        split_suffixes=data_config['train_split_suffixes'],
-        crop_length=data_config['input_seq_len'],
-        downstream=config['model']['downstream']
-    )
+    if data_mode == 'directory':
+        train_dataset = fMRIDataset(
+            data_root=data_config['data_root'],
+            datasets=data_config['datasets'],
+            split_suffixes=data_config['train_split_suffixes'],
+            crop_length=data_config['input_seq_len'],
+            downstream=config['model']['downstream']
+        )
 
-    # Validation dataset
-    val_dataset = fMRIDataset(
-        data_root=data_config['data_root'],
-        datasets=data_config['datasets'],
-        split_suffixes=data_config['val_split_suffixes'],
-        crop_length=data_config['input_seq_len'],
-        downstream=config['model']['downstream']
-    )
+        val_dataset = fMRIDataset(
+            data_root=data_config['data_root'],
+            datasets=data_config['datasets'],
+            split_suffixes=data_config['val_split_suffixes'],
+            crop_length=data_config['input_seq_len'],
+            downstream=config['model']['downstream']
+        )
+    elif data_mode == 'txt':
+        train_dataset = fMRITxtDataset(
+            data_root=data_config['data_root'],
+            subject_list_txt=data_config.get('train_txt'),
+            crop_length=data_config['input_seq_len'],
+            downstream=config['model']['downstream']
+        )
+
+        val_dataset = fMRITxtDataset(
+            data_root=data_config['data_root'],
+            subject_list_txt=data_config.get('val_txt'),
+            crop_length=data_config['input_seq_len'],
+            downstream=config['model']['downstream']
+        )
+    else:
+        raise ValueError(f"Unsupported pre-training data mode: {data_mode}")
 
     # Create samplers
     if is_distributed:
