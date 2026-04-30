@@ -18,15 +18,16 @@ from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from torch import nn
 from tqdm import tqdm
 
 from src.models.mae_model import AdaptiveMAE
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
+from src.utils.cli_app import YamlBackedCliApp
+from src.utils.config_overrides import add_pretrain_override_args, apply_pretrain_overrides
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract CLS token, patch tokens, and patch coordinates from Omni-fMRI NPZ data."
     )
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=Path("configs/pretrain.yaml"),
-        help="Fallback config used only if the checkpoint does not contain one",
+        help="Fallback config used only if the checkpoint does not contain one. CLI args override both.",
     )
     parser.add_argument("--npz-key", default=None, help="Array key inside NPZ (default: first key)")
     parser.add_argument(
@@ -83,7 +84,8 @@ def parse_args() -> argparse.Namespace:
         default="cuda:0" if torch.cuda.is_available() else "cpu",
         help="Torch device, e.g. cuda:0. Use CUDA_VISIBLE_DEVICES to bind a physical GPU.",
     )
-    return parser.parse_args()
+    add_pretrain_override_args(parser)
+    return parser
 
 
 def load_checkpoint(checkpoint_path: Path) -> dict:
@@ -94,11 +96,6 @@ def load_checkpoint(checkpoint_path: Path) -> dict:
         return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except TypeError:
         return torch.load(checkpoint_path, map_location="cpu")
-
-
-def load_config(config_path: Path) -> dict:
-    with config_path.open("r") as f:
-        return yaml.safe_load(f)
 
 
 def as_3tuple(value: object) -> tuple[int, int, int]:
@@ -150,11 +147,7 @@ def state_dict_from_checkpoint(checkpoint: object) -> dict:
     return checkpoint
 
 
-def create_backbone(checkpoint: dict, fallback_config_path: Path, device: torch.device) -> nn.Module:
-    config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
-    if config is None:
-        config = load_config(fallback_config_path)
-
+def create_backbone(checkpoint: dict, config: dict, device: torch.device) -> nn.Module:
     model = create_model(config)
     state_dict = state_dict_from_checkpoint(checkpoint)
     load_msg = model.load_state_dict(state_dict, strict=False)
@@ -301,54 +294,71 @@ def extract_tokens(backbone: nn.Module, sample: torch.Tensor) -> tuple[np.ndarra
     return cls_token, patch_tokens, patch_coords
 
 
-def main() -> None:
-    args = parse_args()
-    input_path = args.input.expanduser().resolve()
-    output_dir = args.output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+class ExtractFeaturesApp(YamlBackedCliApp):
+    default_config_path = Path("configs/pretrain.yaml")
 
-    device = torch.device(args.device)
-    if device.type == "cuda":
-        torch.cuda.set_device(device)
+    def build_parser(self) -> argparse.ArgumentParser:
+        return build_parser()
 
-    checkpoint = load_checkpoint(args.checkpoint.expanduser().resolve())
-    backbone = create_backbone(checkpoint, args.config, device)
+    def configure(self) -> dict:
+        assert self.args is not None
+        checkpoint = load_checkpoint(self.args.checkpoint.expanduser().resolve())
+        config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
+        if config is None:
+            config = self.load_base_config(self.args)
+        apply_pretrain_overrides(config, self.args)
+        return config
 
-    in_chans = int(backbone.patch_embed.proj.in_channels)
-    spatial_size = tuple(int(x) for x in backbone.img_size)
+    def run(self) -> None:
+        self.args = self.parse_args()
+        config = self.configure()
 
-    files = iter_npz_files(input_path, args.recursive)
-    input_root = input_path if input_path.is_dir() else None
+        input_path = self.args.input.expanduser().resolve()
+        output_dir = self.args.output_dir.expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Found {len(files)} NPZ file(s). Writing outputs to {output_dir}")
-    for npz_path in tqdm(files, desc="Extracting tokens"):
-        out_path = output_path_for(npz_path, input_root, output_dir)
-        if out_path.exists() and not args.overwrite:
-            continue
+        device = torch.device(self.args.device)
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
 
-        try:
-            array = load_npz_array(npz_path, args.npz_key)
-            sample = array_to_model_tensor(
-                array,
-                in_chans=in_chans,
-                spatial_size=spatial_size,
-                layout=args.layout,
-                start_frame=args.start_frame,
-                pad_short=args.pad_short,
-            ).to(device=device, non_blocking=True)
+        checkpoint = load_checkpoint(self.args.checkpoint.expanduser().resolve())
+        backbone = create_backbone(checkpoint, config, device)
 
-            cls_token, patch_tokens, patch_coords = extract_tokens(backbone, sample)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(
-                out_path,
-                cls_token=cls_token,
-                patch_tokens=patch_tokens,
-                patch_coords=patch_coords,
-            )
-        except Exception as exc:
-            print(f"[ERR] {npz_path}: {exc}", file=sys.stderr)
+        in_chans = int(backbone.patch_embed.proj.in_channels)
+        spatial_size = tuple(int(x) for x in backbone.img_size)
+
+        files = iter_npz_files(input_path, self.args.recursive)
+        input_root = input_path if input_path.is_dir() else None
+
+        print(f"Found {len(files)} NPZ file(s). Writing outputs to {output_dir}")
+        for npz_path in tqdm(files, desc="Extracting tokens"):
+            out_path = output_path_for(npz_path, input_root, output_dir)
+            if out_path.exists() and not self.args.overwrite:
+                continue
+
+            try:
+                array = load_npz_array(npz_path, self.args.npz_key)
+                sample = array_to_model_tensor(
+                    array,
+                    in_chans=in_chans,
+                    spatial_size=spatial_size,
+                    layout=self.args.layout,
+                    start_frame=self.args.start_frame,
+                    pad_short=self.args.pad_short,
+                ).to(device=device, non_blocking=True)
+
+                cls_token, patch_tokens, patch_coords = extract_tokens(backbone, sample)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(
+                    out_path,
+                    cls_token=cls_token,
+                    patch_tokens=patch_tokens,
+                    patch_coords=patch_coords,
+                )
+            except Exception as exc:
+                print(f"[ERR] {npz_path}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    ExtractFeaturesApp.main()
 

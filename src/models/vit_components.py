@@ -80,7 +80,7 @@ class Attention(nn.Module):
             gate = None
 
         # --- Flash Attention Path (Varlen) ---
-        if HAS_FLASH_ATTN and cu_seqlens is not None and max_seqlen is not None:
+        if HAS_FLASH_ATTN and x.is_cuda and cu_seqlens is not None and max_seqlen is not None:
 
             cu_seqlens = cu_seqlens.to(dtype=torch.int32).contiguous()
             if torch.isnan(q).any() or torch.isinf(q).any():
@@ -141,35 +141,91 @@ class Attention(nn.Module):
         # --- Standard Attention Path ---
         else:
             if is_packed:
-                raise ValueError("Standard Attention does not support packed sequences directly. Use (B, N, C) input or enable Flash Attention.")
+                if cu_seqlens is None or max_seqlen is None:
+                    raise ValueError("Packed standard attention requires cu_seqlens and max_seqlen.")
 
-            attn_mask = None
-            if key_padding_mask is not None:
+                lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(dtype=torch.long).tolist()
+                B = len(lengths)
+                N = max_seqlen
+
+                q = q.reshape(-1, self.num_heads, self.head_dim)
+                k = k.reshape(-1, self.num_heads, self.head_dim)
+                v = v.reshape(-1, self.num_heads, self.head_dim)
+                q, k = self.q_norm(q), self.k_norm(k)
+
+                q_padded = q.new_zeros((B, N, self.num_heads, self.head_dim))
+                k_padded = k.new_zeros((B, N, self.num_heads, self.head_dim))
+                v_padded = v.new_zeros((B, N, self.num_heads, self.head_dim))
+                key_padding_mask = torch.ones((B, N), dtype=torch.bool, device=q.device)
+
+                if gate is not None:
+                    gate_dim = 1 if self.gate_attention == 'headwise' else self.head_dim
+                    gate = gate.reshape(-1, self.num_heads, gate_dim)
+                    gate_padded = gate.new_zeros((B, N, self.num_heads, gate_dim))
+                else:
+                    gate_padded = None
+
+                start = 0
+                for batch_idx, seq_len in enumerate(lengths):
+                    end = start + seq_len
+                    q_padded[batch_idx, :seq_len] = q[start:end]
+                    k_padded[batch_idx, :seq_len] = k[start:end]
+                    v_padded[batch_idx, :seq_len] = v[start:end]
+                    key_padding_mask[batch_idx, :seq_len] = False
+                    if gate_padded is not None:
+                        gate_padded[batch_idx, :seq_len] = gate[start:end]
+                    start = end
+
                 attn_mask = torch.zeros_like(key_padding_mask, dtype=q.dtype)
                 attn_mask.masked_fill_(key_padding_mask, float("-inf"))
-                # Reshape for broadcasting: (B, Num_Heads, Q_len, K_len)
                 attn_mask = attn_mask.view(B, 1, 1, N)
 
-            q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-            k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-            v = v.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+                q = q_padded.permute(0, 2, 1, 3)
+                k = k_padded.permute(0, 2, 1, 3)
+                v = v_padded.permute(0, 2, 1, 3)
 
-            q, k = self.q_norm(q), self.k_norm(k)
-            
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attn_mask,
-                dropout_p=self.attn_drop.p if self.training else 0.,
-            )
+                out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=attn_mask,
+                    dropout_p=self.attn_drop.p if self.training else 0.,
+                )
 
-            out = out.transpose(1, 2) # (B, N, H, D)
-            
-            if gate is not None:
-                # Gate: (B, N, H, 1) or (B, N, H, D) -> Permute -> (B, H, N, D/1)
-                gate = gate.permute(0, 2, 1, 3)
-                out = out * F.sigmoid(gate)
+                out = out.transpose(1, 2)
+
+                if gate_padded is not None:
+                    out = out * F.sigmoid(gate_padded)
+                out = out.reshape(B, N, C)
+
+                packed_outputs = []
+                for batch_idx, seq_len in enumerate(lengths):
+                    packed_outputs.append(out[batch_idx, :seq_len])
+                out = torch.cat(packed_outputs, dim=0)
+            else:
+                attn_mask = None
+                if key_padding_mask is not None:
+                    attn_mask = torch.zeros_like(key_padding_mask, dtype=q.dtype)
+                    attn_mask.masked_fill_(key_padding_mask, float("-inf"))
+                    # Reshape for broadcasting: (B, Num_Heads, Q_len, K_len)
+                    attn_mask = attn_mask.view(B, 1, 1, N)
+
+                q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+                k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+                v = v.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+                q, k = self.q_norm(q), self.k_norm(k)
                 
-            out = out.reshape(B, N, C)
+                out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=attn_mask,
+                    dropout_p=self.attn_drop.p if self.training else 0.,
+                )
+
+                out = out.transpose(1, 2) # (B, N, H, D)
+                
+                if gate is not None:
+                    out = out * F.sigmoid(gate)
+                    
+                out = out.reshape(B, N, C)
 
         x = self.proj(out)
         x = self.proj_drop(x)

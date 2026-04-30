@@ -55,7 +55,8 @@ class MetricLogger:
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available() and dist.get_rank() == 0:
+                is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+                if is_main_process:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),

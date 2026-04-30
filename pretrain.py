@@ -20,6 +20,7 @@ from src.models.mae_model import AdaptiveMAE
 from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 from src.data.pretrain_dataset import fMRIDataset
 import warnings
+from src.utils.cli_app import YamlBackedCliApp
 from src.utils.config_overrides import add_pretrain_override_args, apply_pretrain_overrides
 warnings.filterwarnings("ignore", message=".*torch.cuda.amp.autocast.*")
 
@@ -119,6 +120,13 @@ def set_seed(seed, rank=0):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+
+
+def move_to_device(batch, device):
+    non_blocking = device.type == "cuda"
+    if isinstance(batch, (list, tuple)):
+        return [item.to(device, non_blocking=non_blocking) for item in batch]
+    return batch.to(device, non_blocking=non_blocking)
 
 
 def create_model(config):
@@ -302,7 +310,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, scaler=None):
 
 
 def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, config,
-                    rank, world_size, log_file=None):
+                    rank, world_size, device, log_file=None):
     """Train for one epoch"""
     model.train()
 
@@ -325,15 +333,11 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
             scheduler.step()
 
         # current_step = epoch * len(train_loader) + data_iter_step
-        if torch.cuda.is_available():
-            if isinstance(samples, (list, tuple)):
-                samples = [s.cuda(rank, non_blocking=True) for s in samples]
-            else:
-                # Move data to GPU
-                samples = samples.cuda(rank, non_blocking=True)
+        if device is not None:
+            samples = move_to_device(samples, device)
 
         # Forward pass with mixed precision
-        with autocast(enabled=use_amp):
+        with autocast(enabled=use_amp and device.type == "cuda"):
             if config['model']['model_chose'] == 'jepa':
                 loss, sim_loss, sigreg_loss, aliment_metric = model(samples)
             elif config['model']['model_chose'] == 'mae':
@@ -394,7 +398,7 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, epoch, co
 
 
 @torch.no_grad()
-def validate(model, val_loader, epoch, config, rank, world_size, log_file=None):
+def validate(model, val_loader, epoch, config, rank, world_size, device, log_file=None):
     """Validate the model"""
     model.eval()
 
@@ -404,15 +408,11 @@ def validate(model, val_loader, epoch, config, rank, world_size, log_file=None):
 
     for samples in metric_logger.log_every(val_loader, 50, header):
         # Move data to GPU
-        if torch.cuda.is_available():
-            if isinstance(samples, (list, tuple)):
-                samples = [s.cuda(rank, non_blocking=True) for s in samples]
-            else:
-                # Move data to GPU
-                samples = samples.cuda(rank, non_blocking=True)
+        if device is not None:
+            samples = move_to_device(samples, device)
                 
         # Forward pass
-        with autocast(enabled=True):
+        with autocast(enabled=config['training']['use_amp'] and device.type == "cuda"):
             if config['model']['model_chose'] == 'jepa':
                 loss, sim_loss, sigreg_loss, aliment_metric = model(samples)
             elif config['model']['model_chose'] == 'mae':
@@ -484,7 +484,8 @@ class MetricLogger:
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available() and dist.get_rank() == 0:
+                is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+                if is_main_process:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),
@@ -557,223 +558,243 @@ class SmoothedValue:
         )
 
 
-def main():
-    """Main training function"""
-    # Parse arguments
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='fMRI Pretraining')
     parser.add_argument('--config', type=str, default='configs/pretrain.yaml',
                         help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
-    parser.add_argument('--no_val', type=bool, default=False, help='Disable validation')
+    parser.add_argument('--no-val', '--no_val', dest='no_val', action=argparse.BooleanOptionalAction, default=False, help='Disable validation')
+    parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu',
+                        help='Torch device for single-process execution, e.g. cuda:0 or cpu')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (overrides config)')
     add_pretrain_override_args(parser)
-    args = parser.parse_args()
+    return parser
 
-    # Load config
-    config = load_config(args.config)
 
-    # Override config with command line arguments
-    apply_pretrain_overrides(config, args)
+class PretrainApp(YamlBackedCliApp):
+    default_config_path = "configs/pretrain.yaml"
 
-    # Setup distributed training
-    is_distributed, rank, world_size, gpu = setup_distributed()
+    def build_parser(self) -> argparse.ArgumentParser:
+        return build_parser()
 
-    # Set random seed
-    set_seed(config['experiment']['seed'], rank)
+    def configure(self) -> dict:
+        assert self.args is not None
+        config = self.load_base_config(self.args)
+        apply_pretrain_overrides(config, self.args)
+        return config
 
-    # Create output directories
-    if rank == 0:
-        output_dir = Path(config['experiment']['output_dir'])
-        checkpoint_dir = output_dir / 'checkpoints'
-        log_dir = output_dir / 'logs'
+    def run(self) -> None:
+        """Main training function"""
+        self.args = self.parse_args()
+        config = self.configure()
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        device = torch.device(self.args.device)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(f"CUDA device requested but not available: {self.args.device}")
 
-        # Save config
-        with open(output_dir / 'config.yaml', 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+        # Setup distributed training
+        if device.type == "cuda":
+            is_distributed, rank, world_size, gpu = setup_distributed()
+        else:
+            is_distributed, rank, world_size, gpu = False, 0, 1, None
 
-        # Setup text log file
-        log_file = output_dir / 'training_log.txt'
-        with open(log_file, 'w') as f:
-            f.write(f"Training started at {datetime.datetime.now()}\n")
-            f.write("="*80 + "\n")
-            f.write(f"Config: {args.config}\n")
-            f.write(f"Output directory: {config['experiment']['output_dir']}\n")
-            f.write("="*80 + "\n\n")
-    else:
-        checkpoint_dir = None
-        log_file = None
+        # Set random seed
+        set_seed(config['experiment']['seed'], rank)
 
-    if is_distributed:
-        dist.barrier()
+        # Create output directories
+        if rank == 0:
+            output_dir = Path(config['experiment']['output_dir'])
+            checkpoint_dir = output_dir / 'checkpoints'
+            log_dir = output_dir / 'logs'
 
-    # Print configuration
-    if rank == 0:
-        print(f"Config: {args.config}")
-        print(f"Output directory: {config['experiment']['output_dir']}")
-        print(f"Distributed: {is_distributed}")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save config
+            with open(output_dir / 'config.yaml', 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+
+            # Setup text log file
+            log_file = output_dir / 'training_log.txt'
+            with open(log_file, 'w') as f:
+                f.write(f"Training started at {datetime.datetime.now()}\n")
+                f.write("="*80 + "\n")
+                f.write(f"Config: {self.args.config}\n")
+                f.write(f"Output directory: {config['experiment']['output_dir']}\n")
+                f.write("="*80 + "\n\n")
+        else:
+            checkpoint_dir = None
+            log_file = None
+
         if is_distributed:
-            print(f"World size: {world_size}")
-            print(f"Rank: {rank}")
-        print("="*80)
+            dist.barrier()
 
-    # Create model
-    if rank == 0:
-        print("Creating model...")
-    model = create_model(config)
-    model = model.cuda(gpu)
+        # Print configuration
+        if rank == 0:
+            print(f"Config: {self.args.config}")
+            print(f"Output directory: {config['experiment']['output_dir']}")
+            print(f"Distributed: {is_distributed}")
+            print(f"Device: {device}")
+            if is_distributed:
+                print(f"World size: {world_size}")
+                print(f"Rank: {rank}")
+            print("="*80)
 
-    # Count and print model parameters before wrapping with DDP
-    if rank == 0:
-        print("\nAnalyzing model architecture...")
-        param_stats = count_parameters(model, verbose=True)
+        # Create model
+        if rank == 0:
+            print("Creating model...")
+        model = create_model(config)
+        model = model.to(device)
 
-    if is_distributed:
-        model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
+        # Count and print model parameters before wrapping with DDP
+        if rank == 0:
+            print("\nAnalyzing model architecture...")
+            count_parameters(model, verbose=True)
 
-    model_without_ddp = model.module if is_distributed else model
+        if is_distributed:
+            model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
 
-    # Create dataloaders
-    if rank == 0:
-        print("Creating dataloaders...")
-    train_loader, val_loader, train_sampler = create_dataloaders(
-        config, is_distributed, rank, world_size
-    )
+        model_without_ddp = model.module if is_distributed else model
 
-    if rank == 0:
-        print(f"Training samples: {len(train_loader.dataset)}")
-        print(f"Validation samples: {len(val_loader.dataset)}")
-        print(f"Batches per epoch: {len(train_loader)}")
-
-    # Create optimizer and scheduler
-    optimizer = create_optimizer(model_without_ddp, config)
-    scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
-
-    # Create gradient scaler for mixed precision
-    scaler = GradScaler() if config['training']['use_amp'] else None
-
-    # Load checkpoint if resuming
-    start_epoch = 0
-    best_loss = float('inf')
-    if config['experiment']['resume'] is not None:
-        start_epoch, best_loss = load_checkpoint(
-            config['experiment']['resume'],
-            model_without_ddp,
-            optimizer,
-            scheduler,
-            scaler
+        # Create dataloaders
+        if rank == 0:
+            print("Creating dataloaders...")
+        train_loader, val_loader, train_sampler = create_dataloaders(
+            config, is_distributed, rank, world_size
         )
-
-    # Training loop
-    if rank == 0:
-        print("Starting training...")
-        print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
-
-    start_time = time.time()
-
-    for epoch in range(start_epoch, config['training']['epochs']):
-        if is_distributed and train_sampler is not None:
-            train_sampler.set_epoch(epoch)
-
-        # Train for one epoch
-        train_stats = train_one_epoch(
-            model, train_loader, optimizer, scheduler, scaler,
-            epoch, config, rank, world_size, log_file
-        )
-
-        is_val_epoch = not args.no_val and \
-                       (epoch % config['validation']['val_freq'] == 0 or 
-                        epoch == config['training']['epochs'] - 1)
-
-        # Validate
-        val_stats = {}
-        if is_val_epoch:
-            if len(val_loader) > 0:
-                val_stats = validate(
-                    model, val_loader, epoch, config, rank, world_size, log_file
-                )
-            else:
-                if rank == 0:
-                    print(f"Warning: Validation skipped because val_loader is empty.")
 
         if rank == 0:
-            log_msg = f"Epoch {epoch} Training - " + " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
-            print(log_msg)
-            log_to_file(log_file, log_msg)
+            print(f"Training samples: {len(train_loader.dataset)}")
+            print(f"Validation samples: {len(val_loader.dataset)}")
+            print(f"Batches per epoch: {len(train_loader)}")
 
-            is_best = False
-            if 'loss' in val_stats:
-                val_loss = val_stats['loss']
-                val_msg = f"Epoch {epoch} Validation - Loss: {val_loss:.4f}"
-                print(val_msg)
-                log_to_file(log_file, val_msg)
+        # Create optimizer and scheduler
+        optimizer = create_optimizer(model_without_ddp, config)
+        scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
 
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                    is_best = True
-                    best_msg = f"--> New best validation loss: {best_loss:.4f}"
-                    print(best_msg)
-                    log_to_file(log_file, best_msg)
+        # Create gradient scaler for mixed precision
+        scaler = GradScaler() if config['training']['use_amp'] else None
 
-            should_save_periodic = (epoch + 1) % config['logging']['save_freq'] == 0
-            should_save_best = is_best
+        # Load checkpoint if resuming
+        start_epoch = 0
+        best_loss = float('inf')
+        if config['experiment']['resume'] is not None:
+            start_epoch, best_loss = load_checkpoint(
+                config['experiment']['resume'],
+                model_without_ddp,
+                optimizer,
+                scheduler,
+                scaler
+            )
 
-            if should_save_periodic or should_save_best:
-                checkpoint_state = {
-                    'epoch': epoch + 1,
-                    'model_state_dict': model_without_ddp.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'best_loss': best_loss,
-                    'config': config,
-                }
-                if scaler is not None:
-                    checkpoint_state['scaler_state_dict'] = scaler.state_dict()
+        # Training loop
+        if rank == 0:
+            print("Starting training...")
+            print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
 
-                if should_save_periodic:
-                    save_checkpoint(
-                        checkpoint_state,
-                        False, 
-                        checkpoint_dir,
-                        filename=f'checkpoint_epoch_{epoch}.pth'
+        start_time = time.time()
+
+        for epoch in range(start_epoch, config['training']['epochs']):
+            if is_distributed and train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
+            # Train for one epoch
+            train_stats = train_one_epoch(
+                model, train_loader, optimizer, scheduler, scaler,
+                epoch, config, rank, world_size, device, log_file
+            )
+
+            is_val_epoch = not self.args.no_val and \
+                           (epoch % config['validation']['val_freq'] == 0 or 
+                            epoch == config['training']['epochs'] - 1)
+
+            # Validate
+            val_stats = {}
+            if is_val_epoch:
+                if len(val_loader) > 0:
+                    val_stats = validate(
+                        model, val_loader, epoch, config, rank, world_size, device, log_file
                     )
-                    print(f"Saved periodic checkpoint: checkpoint_epoch_{epoch}.pth")
+                else:
+                    if rank == 0:
+                        print(f"Warning: Validation skipped because val_loader is empty.")
 
-                if should_save_best:
-                    save_checkpoint(
-                        checkpoint_state,
-                        True,
-                        checkpoint_dir,
-                        filename='best_checkpoint.pth' 
-                    )
-                    print(f"Saved best checkpoint: best_checkpoint.pth")
-    # Training finished
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+            if rank == 0:
+                log_msg = f"Epoch {epoch} Training - " + " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
+                print(log_msg)
+                log_to_file(log_file, log_msg)
 
-    if rank == 0:
-        summary = [
-            "="*80,
-            f"Training completed in {total_time_str}",
-            f"Best validation loss: {best_loss:.4f}",
-            f"Total epochs: {config['training']['epochs']}",
-            f"Final learning rate: {optimizer.param_groups[0]['lr']:.6f}",
-            "="*80
-        ]
+                is_best = False
+                if 'loss' in val_stats:
+                    val_loss = val_stats['loss']
+                    val_msg = f"Epoch {epoch} Validation - Loss: {val_loss:.4f}"
+                    print(val_msg)
+                    log_to_file(log_file, val_msg)
 
-        for line in summary:
-            print(line)
-            log_to_file(log_file, line)
+                    if val_loss < best_loss:
+                        best_loss = val_loss
+                        is_best = True
+                        best_msg = f"--> New best validation loss: {best_loss:.4f}"
+                        print(best_msg)
+                        log_to_file(log_file, best_msg)
 
-    # Cleanup
-    cleanup_distributed()
+                should_save_periodic = (epoch + 1) % config['logging']['save_freq'] == 0
+                should_save_best = is_best
+
+                if should_save_periodic or should_save_best:
+                    checkpoint_state = {
+                        'epoch': epoch + 1,
+                        'model_state_dict': model_without_ddp.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'best_loss': best_loss,
+                        'config': config,
+                    }
+                    if scaler is not None:
+                        checkpoint_state['scaler_state_dict'] = scaler.state_dict()
+
+                    if should_save_periodic:
+                        save_checkpoint(
+                            checkpoint_state,
+                            False, 
+                            checkpoint_dir,
+                            filename=f'checkpoint_epoch_{epoch}.pth'
+                        )
+                        print(f"Saved periodic checkpoint: checkpoint_epoch_{epoch}.pth")
+
+                    if should_save_best:
+                        save_checkpoint(
+                            checkpoint_state,
+                            True,
+                            checkpoint_dir,
+                            filename='best_checkpoint.pth' 
+                        )
+                        print(f"Saved best checkpoint: best_checkpoint.pth")
+        # Training finished
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+
+        if rank == 0:
+            summary = [
+                "="*80,
+                f"Training completed in {total_time_str}",
+                f"Best validation loss: {best_loss:.4f}",
+                f"Total epochs: {config['training']['epochs']}",
+                f"Final learning rate: {optimizer.param_groups[0]['lr']:.6f}",
+                "="*80
+            ]
+
+            for line in summary:
+                print(line)
+                log_to_file(log_file, line)
+
+        # Cleanup
+        cleanup_distributed()
 
 
 if __name__ == '__main__':
-    main()
+    PretrainApp.main()
 

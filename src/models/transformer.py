@@ -93,7 +93,7 @@ class Attention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
         
-        if self.use_flash_attn and cu_seqlens is not None and max_seqlen is not None:
+        if self.use_flash_attn and x.is_cuda and cu_seqlens is not None and max_seqlen is not None:
             # Flash-attn varlen API: requires flattened inputs
             # q, k, v: (B, num_heads, N, head_dim) -> (total_tokens, num_heads, head_dim)
             q = q.transpose(1, 2).reshape(-1, self.num_heads, q.shape[-1])
@@ -112,7 +112,7 @@ class Attention(nn.Module):
             )
             # x: (total_tokens, num_heads, head_dim) -> (B, N, num_heads * head_dim)
             x = x.reshape(B, N, -1)
-        elif self.use_flash_attn:
+        elif self.use_flash_attn and x.is_cuda:
             # Standard flash attention (non-varlen)
             from flash_attn import flash_attn_func
             q = q.transpose(1, 2)  # (B, N, num_heads, head_dim)

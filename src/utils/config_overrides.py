@@ -3,6 +3,17 @@ import argparse
 import yaml
 
 
+def get_cfg_override_options(args):
+    options = []
+    legacy = getattr(args, "cfg_options", None)
+    if legacy:
+        options.extend(legacy)
+    add_args = getattr(args, "add_args", None)
+    if add_args:
+        options.extend(add_args)
+    return options
+
+
 def _set_nested(config, dotted_key, value):
     keys = dotted_key.split(".")
     current = config
@@ -63,10 +74,18 @@ def add_pretrain_override_args(parser):
     parser.add_argument("--save_freq", type=int, default=None)
     parser.add_argument("--val_freq", type=int, default=None)
     parser.add_argument(
+        "--add-arg",
+        "--add_arg",
+        dest="add_args",
+        nargs="*",
+        default=None,
+        help="CLI-first override using dotted key=value, e.g. data.batch_size=8 model.thresholds='[0.2]'",
+    )
+    parser.add_argument(
         "--cfg-options",
         nargs="*",
         default=None,
-        help="Override any config entry with dotted key=value, e.g. data.batch_size=8 model.thresholds='[0.2]'",
+        help="Deprecated alias for --add-arg/--add_arg.",
     )
 
 
@@ -91,7 +110,7 @@ def add_finetune_override_args(parser):
 
 
 def apply_pretrain_overrides(config, args):
-    apply_cfg_options(config, getattr(args, "cfg_options", None))
+    apply_cfg_options(config, get_cfg_override_options(args))
 
     experiment_map = {"seed": "seed", "resume": "resume", "output_dir": "output_dir"}
     data_map = {

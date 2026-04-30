@@ -177,6 +177,20 @@ patch_coords  # Shape: (num_patches, 3), top-left voxel coords in (z, y, x)
 
 ## Training
 
+The training entry points are now CLI-first:
+
+- `pretrain.py`, `finetune.py`, `extract_feat.py`, and `data_preparation/preprocessing.py` use object-oriented CLI app entry points.
+- YAML files in `configs/` remain the default source of values.
+- Prefer overriding behavior from the command line instead of editing YAML.
+- Use `--add-arg key=value` or `--add_arg key=value` for dotted nested overrides.
+
+Examples:
+
+```bash
+python pretrain.py --add-arg data.batch_size=8 training.epochs=2
+python finetune.py --add-arg task.task_type=classification data.mode=directory
+```
+
 ### Pre-training
 
 Expected directory layout:
@@ -192,24 +206,19 @@ data_root/
       0010001_run-1_0000-0199_2.npz
 ```
 
-Update `configs/pretrain.yaml`:
-
-```yaml
-data:
-  data_root: /path/to/data_root
-  datasets: ["HCP", "ABIDE"]
-```
-
 Start pre-training:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 CONFIG_FILE=configs/pretrain.yaml OUTPUT_DIR=outputs/pretrain \
-  bash scripts/pretrain.sh --cfg-options model.thresholds='[0.23]' training.warmup_epochs=5
+  bash scripts/pretrain.sh \
+  --data_root /path/to/data_root \
+  --datasets HCP ABIDE \
+  --add-arg model.thresholds='[0.23]' training.warmup_epochs=5
 ```
 
 ### Downstream Evaluation
 
-Directory mode:
+Directory mode example:
 
 ```yaml
 task:
@@ -221,7 +230,7 @@ data:
   mode: "directory"
 ```
 
-TXT mode:
+TXT mode example:
 
 ```yaml
 task:
@@ -246,6 +255,8 @@ bash scripts/finetune.sh \
   --num_classes 2 \
   --batch_size 16
 ```
+
+The YAML file still provides fallback defaults, but the recommended workflow is to leave `configs/finetune.yaml` as a baseline and inject run-specific values from CLI.
 
 ## Docker
 

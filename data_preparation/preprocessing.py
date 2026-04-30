@@ -37,6 +37,12 @@ import nibabel as nib
 from nibabel.affines import apply_affine
 from tqdm import tqdm
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.utils.cli_app import CliApp
+
 
 # Configure logging
 logging.basicConfig(
@@ -360,7 +366,7 @@ def process_single_subject(
         return False
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Preprocess neuroimaging data for machine learning",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -412,61 +418,68 @@ Examples:
         default="INFO",
         help="Logging verbosity (default: INFO)"
     )
+    return parser
 
-    args = parser.parse_args()
 
-    # Set logging level
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
+class PreprocessingApp(CliApp):
+    def build_parser(self) -> argparse.ArgumentParser:
+        return build_parser()
 
-    # Setup paths
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    def run(self) -> None:
+        self.args = self.parse_args()
 
-    if not input_dir.exists():
-        logger.error(f"Input directory does not exist: {input_dir}")
-        sys.exit(1)
+        # Set logging level
+        logging.getLogger().setLevel(getattr(logging, self.args.log_level))
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output directory: {output_dir}")
+        # Setup paths
+        input_dir = Path(self.args.input_dir)
+        output_dir = Path(self.args.output_dir)
 
-    # Find files
-    try:
-        files = find_nifti_files(input_dir, pattern=args.pattern)
-        logger.info(f"Found {len(files)} files matching pattern '{args.pattern}'")
-    except Exception as e:
-        logger.error(f"Failed to scan directory: {e}")
-        sys.exit(1)
+        if not input_dir.exists():
+            logger.error(f"Input directory does not exist: {input_dir}")
+            sys.exit(1)
 
-    if not files:
-        logger.warning("No files found to process")
-        sys.exit(0)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Output directory: {output_dir}")
 
-    # Process files
-    success_count = 0
-    fail_count = 0
+        # Find files
+        try:
+            files = find_nifti_files(input_dir, pattern=self.args.pattern)
+            logger.info(f"Found {len(files)} files matching pattern '{self.args.pattern}'")
+        except Exception as e:
+            logger.error(f"Failed to scan directory: {e}")
+            sys.exit(1)
 
-    for filepath in tqdm(files, desc="Processing subjects"):
-        success = process_single_subject(
-            filepath,
-            output_dir,
-            target_shape=tuple(args.target_shape),
-            segment_length=args.segment_length
-        )
-        if success:
-            success_count += 1
-        else:
-            fail_count += 1
+        if not files:
+            logger.warning("No files found to process")
+            sys.exit(0)
 
-    # Summary
-    logger.info("=" * 50)
-    logger.info("Processing complete")
-    logger.info(f"Successfully processed: {success_count}")
-    logger.info(f"Failed: {fail_count}")
-    logger.info(f"Output directory: {output_dir}")
+        # Process files
+        success_count = 0
+        fail_count = 0
 
-    if fail_count > 0:
-        sys.exit(1)
+        for filepath in tqdm(files, desc="Processing subjects"):
+            success = process_single_subject(
+                filepath,
+                output_dir,
+                target_shape=tuple(self.args.target_shape),
+                segment_length=self.args.segment_length
+            )
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+
+        # Summary
+        logger.info("=" * 50)
+        logger.info("Processing complete")
+        logger.info(f"Successfully processed: {success_count}")
+        logger.info(f"Failed: {fail_count}")
+        logger.info(f"Output directory: {output_dir}")
+
+        if fail_count > 0:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    PreprocessingApp.main()

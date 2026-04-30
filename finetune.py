@@ -20,11 +20,16 @@ from src.models.patch_embed_3d import TokenizedZeroConvPatchAttn3D
 from src.data.downstream_dataset import fMRITaskDataset, fMRITaskDataset1, EmoFMRIDataset, HCPtaskDataset
 from src.data.adni_dataset import ADNIDataset
 
-from src.utils.logging_utils import MetricLogger, log_to_file, load_config, count_parameters
+from src.utils.logging_utils import MetricLogger, log_to_file, count_parameters
+from src.utils.cli_app import YamlBackedCliApp
 from src.utils.dist_ddp import setup_distributed, cleanup_distributed
 from src.utils.optim import create_lr_scheduler, create_optimizer
 from src.utils.utils import LabelScaler, save_checkpoint, load_checkpoint, set_seed
 from src.utils.config_overrides import add_finetune_override_args, apply_finetune_overrides
+
+
+def move_to_device(tensor, device):
+    return tensor.to(device, non_blocking=device.type == "cuda")
 
 
 def create_model(config):
@@ -265,7 +270,7 @@ def create_dataloaders(config, is_distributed, rank, world_size):
 
 
 def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler, epoch, config,
-                    rank, label_scaler=None):
+                    rank, device, label_scaler=None):
     """Train for one epoch"""
     model.train()
 
@@ -287,13 +292,12 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler
         if data_iter_step % accum_iter == 0:
             scheduler.step()
 
-        # Move data to GPU
-        samples = samples.cuda(rank, non_blocking=True)
-        labels = labels.cuda(rank, non_blocking=True)
+        samples = move_to_device(samples, device)
+        labels = move_to_device(labels, device)
 
 
         # Forward pass with mixed precision
-        with autocast(enabled=use_amp):
+        with autocast(enabled=use_amp and device.type == "cuda"):
             outputs = model(samples)
 
             # Calculate loss based on task type
@@ -354,7 +358,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, criterion, config, rank, epoch=None, label_scaler=None, mode='val'):
+def evaluate(model, data_loader, criterion, config, rank, device, epoch=None, label_scaler=None, mode='val'):
 
     model.eval()
     metric_logger = MetricLogger(delimiter="  ")
@@ -365,8 +369,8 @@ def evaluate(model, data_loader, criterion, config, rank, epoch=None, label_scal
     all_preds, all_targets = [], []
 
     for samples, labels in metric_logger.log_every(data_loader, 50, header):
-        samples = samples.cuda(rank, non_blocking=True)
-        labels = labels.cuda(rank, non_blocking=True)
+        samples = move_to_device(samples, device)
+        labels = move_to_device(labels, device)
 
         outputs = model(samples)
 
@@ -418,216 +422,267 @@ def evaluate(model, data_loader, criterion, config, rank, epoch=None, label_scal
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def main():
-    """Main fine-tuning function"""
-    # Parse arguments
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='fMRI Downstream Fine-tuning')
     parser.add_argument('--config', type=str, default='configs/finetune.yaml',
-                        help='Path to config file')
+                        help='Path to config file. YAML provides defaults and CLI args override them.')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
+    parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu',
+                        help='Torch device for single-process execution, e.g. cuda:0 or cpu')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (overrides config)')
     add_finetune_override_args(parser)
-    args = parser.parse_args()
+    return parser
 
-    # Load config
-    config = load_config(args.config)
 
-    # Override config with command line arguments
-    apply_finetune_overrides(config, args)
+class FinetuneApp(YamlBackedCliApp):
+    default_config_path = "configs/finetune.yaml"
 
-    # Setup distributed training
-    is_distributed, rank, world_size, gpu = setup_distributed()
+    def build_parser(self) -> argparse.ArgumentParser:
+        return build_parser()
 
-    # Set random seed
-    set_seed(config['experiment']['seed'], rank)
+    def configure(self) -> dict:
+        assert self.args is not None
+        config = self.load_base_config(self.args)
+        apply_finetune_overrides(config, self.args)
+        return config
 
-    # Create output directories
-    if rank == 0:
-        output_dir = Path(config['experiment']['output_dir'])
-        checkpoint_dir = output_dir / 'checkpoints'
-        log_dir = output_dir / 'logs'
+    def run(self) -> None:
+        """Main fine-tuning function"""
+        self.args = self.parse_args()
+        config = self.configure()
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        device = torch.device(self.args.device)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(f"CUDA device requested but not available: {self.args.device}")
 
-        # Save config
-        with open(output_dir / 'config.yaml', 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+        # Setup distributed training
+        if device.type == "cuda":
+            is_distributed, rank, world_size, gpu = setup_distributed()
+        else:
+            is_distributed, rank, world_size, gpu = False, 0, 1, None
 
-        # Setup text log file
-        log_file = output_dir / 'training_log.txt'
-        with open(log_file, 'w') as f:
-            f.write(f"Fine-tuning started at {datetime.datetime.now()}\n")
-            f.write("="*80 + "\n")
-            f.write(f"Config: {args.config}\n")
-            f.write(f"Output directory: {config['experiment']['output_dir']}\n")
-            f.write(f"Task type: {config['task']['task_type']}\n")
-    else:
-        checkpoint_dir = None
-        log_file = None
+        # Set random seed
+        set_seed(config['experiment']['seed'], rank)
 
-    if is_distributed:
-        dist.barrier()
-
-    # Print configuration
-    if rank == 0:
-        print(f"Config: {args.config}")
-        print(f"Output directory: {config['experiment']['output_dir']}")
-        print(f"Task type: {config['task']['task_type']}")
-        print(f"Num classes: {config['task']['num_classes']}")
-        print(f"Distributed: {is_distributed}")
-
-    # Create model
-    if rank == 0:
-        print("Creating model...")
-    model = create_model(config)
-    model = model.cuda(gpu)
-
-    if is_distributed:
-        model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
-
-    model_without_ddp = model.module if is_distributed else model
-
-    # Optionally freeze the encoder
-    if config['training'].get('freeze_encoder', True):
+        # Create output directories
         if rank == 0:
-            print("Freezing encoder weights. Only the head will be trained.")
-        for name, param in model_without_ddp.named_parameters():
-            if 'head' not in name:
-                param.requires_grad = False
+            output_dir = Path(config['experiment']['output_dir'])
+            checkpoint_dir = output_dir / 'checkpoints'
+            log_dir = output_dir / 'logs'
 
-        # Log which parameters are trainable
-        if rank == 0:
-            print("Trainable parameters:")
-            for name, param in model_without_ddp.named_parameters():
-                if param.requires_grad:
-                    print(name)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Count and print model parameters before wrapping with DDP
-    if rank == 0:
-        print("\nAnalyzing model architecture...")
-        count_parameters(model_without_ddp, verbose=True)
+            # Save config
+            with open(output_dir / 'config.yaml', 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
 
-    # Create dataloaders
-    if rank == 0:
-        print("Creating dataloaders...")
-    train_loader, val_loader, test_loader, train_sampler = create_dataloaders(
-        config, is_distributed, rank, world_size
-    )
-
-    label_scaler = None
-    if config['task']['task_type'] == 'regression':
-        if rank == 0:
-            mean_val = config['task']['mean']
-            scale_val = config['task']['std']
-            print(f"StandardScaler fit complete. Mean: {mean_val:.4f}, Std: {scale_val:.4f}")
-
-        norm_mean = torch.tensor(mean_val, device=gpu, dtype=torch.float32)
-        norm_std = torch.tensor(scale_val, device=gpu, dtype=torch.float32)
+            # Setup text log file
+            log_file = output_dir / 'training_log.txt'
+            with open(log_file, 'w') as f:
+                f.write(f"Fine-tuning started at {datetime.datetime.now()}\n")
+                f.write("="*80 + "\n")
+                f.write(f"Config: {self.args.config}\n")
+                f.write(f"Output directory: {config['experiment']['output_dir']}\n")
+                f.write(f"Task type: {config['task']['task_type']}\n")
+        else:
+            checkpoint_dir = None
+            log_file = None
 
         if is_distributed:
-            dist.broadcast(norm_mean, src=0)
-            dist.broadcast(norm_std, src=0)
+            dist.barrier()
 
-        label_scaler = LabelScaler(norm_mean, norm_std)
-
-    if rank == 0:
-        print(f"Training samples: {len(train_loader.dataset)}")
-        print(f"Validation samples: {len(val_loader.dataset)}")
-        print(f"Test samples: {len(test_loader.dataset)}")
-        print(f"Batches per epoch: {len(train_loader)}")
-
-    task_config = config['task']
-    if task_config['task_type'] == 'classification':
-        criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
-    else:  
-        criterion = nn.MSELoss()
-
-    # Create optimizer and scheduler
-    optimizer = create_optimizer(model_without_ddp, config)
-    scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
-
-    # Create gradient scaler for mixed precision
-    scaler = GradScaler() if config['training']['use_amp'] else None
-
-    # Load checkpoint if resuming
-    start_epoch = 0
-    best_metric = 0.0  # For classification: accuracy
-    best_loss = float('inf') # For regression: loss
-
-    if config['experiment'].get('resume', None) is not None:
-        start_epoch, best_metric, best_loss = load_checkpoint(
-            config['experiment']['resume'],
-            model_without_ddp,
-            optimizer,
-            scheduler,
-            scaler
-        )
-        print(f"Resumed from epoch {start_epoch}. Best metric: {best_metric:.4f}, Best loss: {best_loss:.4f}")
-    else:
-        # Initialize best_metric for new run based on task
-        if config['task']['task_type'] == 'classification':
-            best_metric = 0.0  # Accuracy starts at 0
-        else: # regression
-            best_metric = float('inf') # We use best_loss for regression, but this keeps it consistent
-
-    # Training loop
-    if rank == 0:
-        print("Starting fine-tuning...")
-        print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
-
-
-    for epoch in range(start_epoch, config['training']['epochs']):
-        if is_distributed and train_sampler is not None:
-            train_sampler.set_epoch(epoch)
-
-        # Train for one epoch
-        train_stats = train_one_epoch(
-            model, train_loader, criterion, optimizer, scheduler, scaler,
-            epoch, config, rank, label_scaler
-        )
-
-        # Log training stats
+        # Print configuration
         if rank == 0:
-            log_msg = f"Epoch {epoch} Training - "
-            log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
-            print(log_msg)
-            log_to_file(log_file, log_msg)
+            print(f"Config: {self.args.config}")
+            print(f"Output directory: {config['experiment']['output_dir']}")
+            print(f"Task type: {config['task']['task_type']}")
+            print(f"Num classes: {config['task']['num_classes']}")
+            print(f"Distributed: {is_distributed}")
+            print(f"Device: {device}")
 
-        # Validate
-        if epoch % config['validation']['val_freq'] == 0 or epoch == config['training']['epochs'] - 1:
-            val_stats = evaluate(model, val_loader, criterion, config, rank, epoch, label_scaler, 'val')
-            test_stats = evaluate(model, test_loader, criterion, config, rank, epoch, label_scaler, 'test')
+        # Create model
+        if rank == 0:
+            print("Creating model...")
+        model = create_model(config)
+        model = model.to(device)
 
-            # Log validation stats
+        if is_distributed:
+            model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
+
+        model_without_ddp = model.module if is_distributed else model
+
+        # Optionally freeze the encoder
+        if config['training'].get('freeze_encoder', True):
             if rank == 0:
-                log_msg = f"Epoch {epoch} Validation - "
-                log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in val_stats.items()])
+                print("Freezing encoder weights. Only the head will be trained.")
+            for name, param in model_without_ddp.named_parameters():
+                if 'head' not in name:
+                    param.requires_grad = False
+
+            # Log which parameters are trainable
+            if rank == 0:
+                print("Trainable parameters:")
+                for name, param in model_without_ddp.named_parameters():
+                    if param.requires_grad:
+                        print(name)
+
+        # Count and print model parameters before wrapping with DDP
+        if rank == 0:
+            print("\nAnalyzing model architecture...")
+            count_parameters(model_without_ddp, verbose=True)
+
+        # Create dataloaders
+        if rank == 0:
+            print("Creating dataloaders...")
+        train_loader, val_loader, test_loader, train_sampler = create_dataloaders(
+            config, is_distributed, rank, world_size
+        )
+
+        label_scaler = None
+        if config['task']['task_type'] == 'regression':
+            mean_val = config['task']['mean']
+            scale_val = config['task']['std']
+            if rank == 0:
+                print(f"StandardScaler fit complete. Mean: {mean_val:.4f}, Std: {scale_val:.4f}")
+
+            norm_mean = torch.tensor(mean_val, device=device, dtype=torch.float32)
+            norm_std = torch.tensor(scale_val, device=device, dtype=torch.float32)
+
+            if is_distributed:
+                dist.broadcast(norm_mean, src=0)
+                dist.broadcast(norm_std, src=0)
+
+            label_scaler = LabelScaler(norm_mean, norm_std)
+
+        if rank == 0:
+            print(f"Training samples: {len(train_loader.dataset)}")
+            print(f"Validation samples: {len(val_loader.dataset)}")
+            print(f"Test samples: {len(test_loader.dataset)}")
+            print(f"Batches per epoch: {len(train_loader)}")
+
+        task_config = config['task']
+        if task_config['task_type'] == 'classification':
+            criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
+        else:
+            criterion = nn.MSELoss()
+
+        # Create optimizer and scheduler
+        optimizer = create_optimizer(model_without_ddp, config)
+        scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
+
+        # Create gradient scaler for mixed precision
+        scaler = GradScaler() if config['training']['use_amp'] else None
+
+        # Load checkpoint if resuming
+        start_epoch = 0
+        best_metric = 0.0
+        best_loss = float('inf')
+
+        if config['experiment'].get('resume', None) is not None:
+            start_epoch, best_metric, best_loss = load_checkpoint(
+                config['experiment']['resume'],
+                model_without_ddp,
+                optimizer,
+                scheduler,
+                scaler
+            )
+            print(f"Resumed from epoch {start_epoch}. Best metric: {best_metric:.4f}, Best loss: {best_loss:.4f}")
+        elif config['task']['task_type'] != 'classification':
+            best_metric = float('inf')
+
+        # Training loop
+        if rank == 0:
+            print("Starting fine-tuning...")
+            print(f"Training from epoch {start_epoch} to {config['training']['epochs']}")
+
+        for epoch in range(start_epoch, config['training']['epochs']):
+            if is_distributed and train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
+            # Train for one epoch
+            train_stats = train_one_epoch(
+                model, train_loader, criterion, optimizer, scheduler, scaler,
+                epoch, config, rank, device, label_scaler
+            )
+
+            # Log training stats
+            if rank == 0:
+                log_msg = f"Epoch {epoch} Training - "
+                log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in train_stats.items()])
                 print(log_msg)
                 log_to_file(log_file, log_msg)
 
-                log_msg = f"Epoch {epoch} Test - "
-                log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in test_stats.items()])
-                print(log_msg)
-                log_to_file(log_file, log_msg)
+            # Validate
+            if epoch % config['validation']['val_freq'] == 0 or epoch == config['training']['epochs'] - 1:
+                val_stats = evaluate(model, val_loader, criterion, config, rank, device, epoch, label_scaler, 'val')
+                test_stats = evaluate(model, test_loader, criterion, config, rank, device, epoch, label_scaler, 'test')
 
-            # Determine best model based on task type
-            if rank == 0:
-                if task_config['task_type'] == 'classification':
-                    current_metric = val_stats.get('acc', 0.0)
-                    is_best = current_metric > best_metric
-                    if is_best:
-                        best_metric = current_metric
-                        best_loss = val_stats['loss']
-                else:
-                    is_best = val_stats['loss'] < best_loss
-                    if is_best:
-                        best_loss = val_stats['loss']
-                        best_metric = -best_loss  # Store negative loss as metric
+                # Log validation stats
+                if rank == 0:
+                    log_msg = f"Epoch {epoch} Validation - "
+                    log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in val_stats.items()])
+                    print(log_msg)
+                    log_to_file(log_file, log_msg)
 
+                    log_msg = f"Epoch {epoch} Test - "
+                    log_msg += " | ".join([f"{k}: {v:.4f}" for k, v in test_stats.items()])
+                    print(log_msg)
+                    log_to_file(log_file, log_msg)
+
+                # Determine best model based on task type
+                if rank == 0:
+                    if task_config['task_type'] == 'classification':
+                        current_metric = val_stats.get('acc', 0.0)
+                        is_best = current_metric > best_metric
+                        if is_best:
+                            best_metric = current_metric
+                            best_loss = val_stats['loss']
+                    else:
+                        is_best = val_stats['loss'] < best_loss
+                        if is_best:
+                            best_loss = val_stats['loss']
+                            best_metric = -best_loss
+
+                    checkpoint_state = {
+                        'epoch': epoch + 1,
+                        'model_state_dict': model_without_ddp.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'best_metric': best_metric,
+                        'best_loss': best_loss,
+                        'config': config,
+                        'train_stats': train_stats,
+                        'val_stats': val_stats,
+                    }
+
+                    if scaler is not None:
+                        checkpoint_state['scaler_state_dict'] = scaler.state_dict()
+
+                    save_checkpoint(
+                        checkpoint_state,
+                        is_best,
+                        checkpoint_dir,
+                        filename=f'checkpoint_epoch_{epoch}.pth'
+                    )
+
+                    checkpoint_msg = f"Checkpoint saved at epoch {epoch}"
+                    print(checkpoint_msg)
+                    log_to_file(log_file, checkpoint_msg)
+
+                    if is_best:
+                        if task_config['task_type'] == 'classification':
+                            best_msg = f"New best validation accuracy: {best_metric:.4f}"
+                        else:
+                            best_msg = f"New best validation loss: {best_loss:.4f}"
+                        print(best_msg)
+                        log_to_file(log_file, best_msg)
+
+            # Save periodic checkpoint
+            if rank == 0 and (epoch + 1) % config['logging']['save_freq'] == 0:
                 checkpoint_state = {
                     'epoch': epoch + 1,
                     'model_state_dict': model_without_ddp.state_dict(),
@@ -636,61 +691,23 @@ def main():
                     'best_metric': best_metric,
                     'best_loss': best_loss,
                     'config': config,
-                    'train_stats': train_stats,
-                    'val_stats': val_stats,
                 }
 
                 if scaler is not None:
                     checkpoint_state['scaler_state_dict'] = scaler.state_dict()
 
-                
                 save_checkpoint(
                     checkpoint_state,
-                    is_best,
+                    False,
                     checkpoint_dir,
                     filename=f'checkpoint_epoch_{epoch}.pth'
                 )
 
-                checkpoint_msg = f"Checkpoint saved at epoch {epoch}"
-                print(checkpoint_msg)
-                log_to_file(log_file, checkpoint_msg)
-
-                if is_best:
-                    if task_config['task_type'] == 'classification':
-                        best_msg = f"New best validation accuracy: {best_metric:.4f}"
-                    else:
-                        best_msg = f"New best validation loss: {best_loss:.4f}"
-                    print(best_msg)
-                    log_to_file(log_file, best_msg)
-
-        # Save periodic checkpoint
-        if rank == 0 and (epoch + 1) % config['logging']['save_freq'] == 0:
-            checkpoint_state = {
-                'epoch': epoch + 1,
-                'model_state_dict': model_without_ddp.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'best_metric': best_metric,
-                'best_loss': best_loss,
-                'config': config,
-            }
-
-            if scaler is not None:
-                checkpoint_state['scaler_state_dict'] = scaler.state_dict()
-
-            save_checkpoint(
-                checkpoint_state,
-                False,
-                checkpoint_dir,
-                filename=f'checkpoint_epoch_{epoch}.pth'
-            )
-
-
-    # Cleanup
-    cleanup_distributed()
+        # Cleanup
+        cleanup_distributed()
 
 
 if __name__ == '__main__':
-    main()
+    FinetuneApp.main()
 
 
