@@ -11,7 +11,7 @@
 
 </div>
 
-Official implementation of Omni-fMRI, a universal atlas-free fMRI foundation model with dynamic patching to reduce compute while preserving informative spatial structure.
+[ICML 2026] Official implementation of Omni-fMRI, a universal atlas-free fMRI foundation model with dynamic patching to reduce compute while preserving informative spatial structure.
 
 <p align="center">
   <img src="pipeline.png" width="800" alt="framework">
