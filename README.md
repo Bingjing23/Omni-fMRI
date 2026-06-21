@@ -16,7 +16,6 @@
 [Project Page](https://onemore1.github.io/Omni-fMRI/) |
 [Checkpoint](https://huggingface.co/OneMore1/Omni-fMRI) |
 [Quick Start Notebook](notebooks/01_quick_start_feature_extraction.ipynb) |
-[Smoke Test](quickstart/quickstart_smoke.py) |
 [Docker](https://hub.docker.com/r/onemore1/onmi-fmri) |
 [Citation](#citation)
 
