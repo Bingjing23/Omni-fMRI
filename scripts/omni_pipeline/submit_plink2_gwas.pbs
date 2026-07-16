@@ -1,0 +1,96 @@
+#!/bin/bash
+#PBS -N omni_plink2_gwas
+#PBS -l select=1:ncpus=8:mem=40gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -J 1-768
+
+set -euo pipefail
+
+# Purpose:
+#   Run PLINK2 linear GWAS screening for one Omni-fMRI embedding per PBS array
+#   task. PLINK2 is a screening/prioritization route only; final discovery
+#   claims should use SAIGE or another relatedness-aware model.
+#
+# Required environment variables:
+#   GWAS_INPUT_DIR   Directory containing embeddings.tsv and covariates.tsv.
+#   PLINK_OUT_DIR    Output directory for PLINK2 results.
+#   BGEN_PATTERN     Pattern with {CHR}, e.g. /reference/.../ukb_imp_chr{CHR}_v3.bgen
+#   SAMPLE_PATTERN   Pattern with {CHR}, e.g. /reference/.../ukb...chr{CHR}...sample
+#
+# Optional environment variables:
+#   PLINK2_BIN       Default: plink2
+#   PHENO_FILE       Default: ${GWAS_INPUT_DIR}/embeddings.tsv
+#   COVAR_FILE       Default: ${GWAS_INPUT_DIR}/covariates.tsv
+#   TRAIT_PREFIX     Default: emb
+#   START_INDEX      Default: PBS_ARRAY_INDEX
+#   THREADS          Default: 8
+#   MEMORY_MB        Default: 32000
+#   MAF              Default: 0.01
+#   MAC              Default: 10
+#   DRY_RUN          If 1, print commands instead of running them.
+
+PLINK2_BIN="${PLINK2_BIN:-plink2}"
+GWAS_INPUT_DIR="${GWAS_INPUT_DIR:?Set GWAS_INPUT_DIR}"
+PLINK_OUT_DIR="${PLINK_OUT_DIR:?Set PLINK_OUT_DIR}"
+BGEN_PATTERN="${BGEN_PATTERN:?Set BGEN_PATTERN with CHR placeholder}"
+SAMPLE_PATTERN="${SAMPLE_PATTERN:?Set SAMPLE_PATTERN with CHR placeholder}"
+PHENO_FILE="${PHENO_FILE:-${GWAS_INPUT_DIR}/embeddings.tsv}"
+COVAR_FILE="${COVAR_FILE:-${GWAS_INPUT_DIR}/covariates.tsv}"
+TRAIT_PREFIX="${TRAIT_PREFIX:-emb}"
+INDEX="${START_INDEX:-${PBS_ARRAY_INDEX:-1}}"
+THREADS="${THREADS:-8}"
+MEMORY_MB="${MEMORY_MB:-32000}"
+MAF="${MAF:-0.01}"
+MAC="${MAC:-10}"
+DRY_RUN="${DRY_RUN:-0}"
+
+TRAIT_ID="$(printf "%s_%03d" "${TRAIT_PREFIX}" "${INDEX}")"
+TRAIT_OUT_DIR="${PLINK_OUT_DIR}/${TRAIT_ID}"
+mkdir -p "${TRAIT_OUT_DIR}"
+
+if [[ ! -s "${PHENO_FILE}" && "${DRY_RUN}" != "1" ]]; then
+  echo "Missing phenotype file: ${PHENO_FILE}" >&2
+  exit 2
+fi
+if [[ ! -s "${COVAR_FILE}" && "${DRY_RUN}" != "1" ]]; then
+  echo "Missing covariate file: ${COVAR_FILE}" >&2
+  exit 2
+fi
+
+echo "Trait: ${TRAIT_ID}"
+echo "Phenotype file: ${PHENO_FILE}"
+echo "Covariate file: ${COVAR_FILE}"
+echo "Output directory: ${TRAIT_OUT_DIR}"
+
+run_or_print() {
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    printf 'DRY_RUN'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+for CHR in $(seq 1 22); do
+  BGEN="${BGEN_PATTERN//\{CHR\}/$CHR}"
+  SAMPLE="${SAMPLE_PATTERN//\{CHR\}/$CHR}"
+  OUT_PREFIX="${TRAIT_OUT_DIR}/${TRAIT_ID}.chr${CHR}"
+
+  run_or_print \
+    "${PLINK2_BIN}" \
+    --bgen "${BGEN}" ref-first \
+    --sample "${SAMPLE}" \
+    --pheno "${PHENO_FILE}" \
+    --pheno-name "${TRAIT_ID}" \
+    --covar "${COVAR_FILE}" \
+    --glm hide-covar \
+    --maf "${MAF}" \
+    --mac "${MAC}" \
+    --threads "${THREADS}" \
+    --memory "${MEMORY_MB}" \
+    --out "${OUT_PREFIX}"
+done
+
+echo "PLINK2 screening finished for ${TRAIT_ID}"

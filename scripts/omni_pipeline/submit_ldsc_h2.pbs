@@ -1,0 +1,96 @@
+#!/bin/bash
+#PBS -N omni_ldsc_h2
+#PBS -l select=1:ncpus=2:mem=12gb
+#PBS -l walltime=08:00:00
+#PBS -j oe
+#PBS -J 1-768
+
+set -euo pipefail
+
+# Purpose:
+#   Munge one Omni-fMRI embedding GWAS summary statistic file and run LDSC h2.
+#
+# Required environment variables:
+#   LDSC_DIR        Directory containing munge_sumstats.py and ldsc.py.
+#   SUMSTATS_DIR    Directory with merged genome-wide per-embedding sumstats.
+#   MUNGED_DIR      Output directory for munged sumstats.
+#   H2_OUT_DIR      Output directory for LDSC h2 logs/results.
+#   REF_LD_CHR      LDSC reference LD score prefix ending in baseline path/chrom prefix.
+#   W_LD_CHR        LDSC regression weight prefix.
+#   SNP_LIST        HapMap3/merge-alleles SNP list.
+#
+# Optional environment variables:
+#   PYTHON_BIN      Default: python
+#   TRAIT_PREFIX    Default: emb
+#   START_INDEX     Default: PBS_ARRAY_INDEX
+#   SUMSTATS_SUFFIX Default: .sumstats.tsv.gz
+#   SNP_COL         Default: ID
+#   A1_COL          Default: A1
+#   A2_COL          Default: REF
+#   P_COL           Default: P
+#   BETA_COL        Default: BETA
+#   SE_COL          Default: SE
+#   N_COL           Default: OBS_CT
+#   DRY_RUN         If 1, print commands instead of running them.
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+LDSC_DIR="${LDSC_DIR:?Set LDSC_DIR}"
+SUMSTATS_DIR="${SUMSTATS_DIR:?Set SUMSTATS_DIR}"
+MUNGED_DIR="${MUNGED_DIR:?Set MUNGED_DIR}"
+H2_OUT_DIR="${H2_OUT_DIR:?Set H2_OUT_DIR}"
+REF_LD_CHR="${REF_LD_CHR:?Set REF_LD_CHR}"
+W_LD_CHR="${W_LD_CHR:?Set W_LD_CHR}"
+SNP_LIST="${SNP_LIST:?Set SNP_LIST}"
+TRAIT_PREFIX="${TRAIT_PREFIX:-emb}"
+INDEX="${START_INDEX:-${PBS_ARRAY_INDEX:-1}}"
+SUMSTATS_SUFFIX="${SUMSTATS_SUFFIX:-.sumstats.tsv.gz}"
+SNP_COL="${SNP_COL:-ID}"
+A1_COL="${A1_COL:-A1}"
+A2_COL="${A2_COL:-REF}"
+P_COL="${P_COL:-P}"
+BETA_COL="${BETA_COL:-BETA}"
+SE_COL="${SE_COL:-SE}"
+N_COL="${N_COL:-OBS_CT}"
+DRY_RUN="${DRY_RUN:-0}"
+
+TRAIT_ID="$(printf "%s_%03d" "${TRAIT_PREFIX}" "${INDEX}")"
+SUMSTATS="${SUMSTATS_DIR}/${TRAIT_ID}${SUMSTATS_SUFFIX}"
+MUNGED_PREFIX="${MUNGED_DIR}/${TRAIT_ID}"
+H2_PREFIX="${H2_OUT_DIR}/${TRAIT_ID}"
+mkdir -p "${MUNGED_DIR}" "${H2_OUT_DIR}"
+
+if [[ ! -s "${SUMSTATS}" && "${DRY_RUN}" != "1" ]]; then
+  echo "Missing sumstats: ${SUMSTATS}" >&2
+  exit 2
+fi
+
+run_or_print() {
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    printf 'DRY_RUN'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+run_or_print \
+  "${PYTHON_BIN}" "${LDSC_DIR}/munge_sumstats.py" \
+  --sumstats "${SUMSTATS}" \
+  --out "${MUNGED_PREFIX}" \
+  --merge-alleles "${SNP_LIST}" \
+  --snp "${SNP_COL}" \
+  --a1 "${A1_COL}" \
+  --a2 "${A2_COL}" \
+  --p "${P_COL}" \
+  --signed-sumstats "${BETA_COL},0" \
+  --N-col "${N_COL}"
+
+run_or_print \
+  "${PYTHON_BIN}" "${LDSC_DIR}/ldsc.py" \
+  --h2 "${MUNGED_PREFIX}.sumstats.gz" \
+  --ref-ld-chr "${REF_LD_CHR}" \
+  --w-ld-chr "${W_LD_CHR}" \
+  --out "${H2_PREFIX}"
+
+echo "LDSC h2 finished for ${TRAIT_ID}"
