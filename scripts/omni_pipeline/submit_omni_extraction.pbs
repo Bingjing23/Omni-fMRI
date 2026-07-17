@@ -1,0 +1,85 @@
+#!/bin/bash
+#PBS -N omni_extract_embeddings
+#PBS -l select=1:ncpus=4:mem=48gb:ngpus=1
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -J 1-64
+
+set -euo pipefail
+
+# Purpose:
+#   Run sharded Omni-fMRI embedding extraction from a manifest. Each PBS array
+#   task writes one shard-level embedding TSV plus failure and QC logs. Merge
+#   shard outputs only after all array tasks finish successfully.
+#
+# Required environment variables:
+#   MANIFEST       Input manifest TSV with eid, subject_id, image_path columns.
+#   CHECKPOINT     Omni-fMRI checkpoint path.
+#   OMNI_OUT_DIR   Directory for shard embedding TSV outputs.
+#   WORK_ROOT      Directory for preprocessing scratch and logs.
+#
+# Optional environment variables:
+#   PYTHON_BIN      Default: python
+#   INPUT_KIND      Default: nifti. Use npz when manifest paths already point to NPZ.
+#   N_SHARDS        Default: PBS_ARRAY_INDEX range size if set manually, else 64.
+#   DEVICE          Default: cuda:0
+#   CONFIG          Default: configs/pretrain.yaml
+#   PATH_COLUMN     Default: image_path. Use nifti_path for audited UKB manifests.
+#   SEGMENT_AGG     Default: mean
+#   LIMIT           Optional per-shard first-N limit for smoke tests.
+#   FORCE           If 1, overwrite existing shard outputs.
+#   DRY_RUN         If 1, validate shard manifest paths without loading the model.
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+MANIFEST="${MANIFEST:?Set MANIFEST}"
+CHECKPOINT="${CHECKPOINT:?Set CHECKPOINT}"
+OMNI_OUT_DIR="${OMNI_OUT_DIR:?Set OMNI_OUT_DIR}"
+WORK_ROOT="${WORK_ROOT:?Set WORK_ROOT}"
+INPUT_KIND="${INPUT_KIND:-nifti}"
+N_SHARDS="${N_SHARDS:-64}"
+INDEX="${PBS_ARRAY_INDEX:-1}"
+DEVICE="${DEVICE:-cuda:0}"
+CONFIG="${CONFIG:-configs/pretrain.yaml}"
+PATH_COLUMN="${PATH_COLUMN:-image_path}"
+SEGMENT_AGG="${SEGMENT_AGG:-mean}"
+LIMIT="${LIMIT:-}"
+FORCE="${FORCE:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+
+mkdir -p "${OMNI_OUT_DIR}" "${WORK_ROOT}"
+
+SHARD_ID="$(printf "shard_%03d_of_%03d" "${INDEX}" "${N_SHARDS}")"
+OUTPUT_TSV="${OMNI_OUT_DIR}/omni_embeddings_${SHARD_ID}.tsv"
+WORK_DIR="${WORK_ROOT}/${SHARD_ID}"
+
+args=(
+  "${PYTHON_BIN}" scripts/omni_pipeline/extract_omni_embeddings.py
+  --manifest "${MANIFEST}"
+  --checkpoint "${CHECKPOINT}"
+  --config "${CONFIG}"
+  --output-tsv "${OUTPUT_TSV}"
+  --work-dir "${WORK_DIR}"
+  --input-kind "${INPUT_KIND}"
+  --path-column "${PATH_COLUMN}"
+  --device "${DEVICE}"
+  --segment-aggregation "${SEGMENT_AGG}"
+  --shard-index "${INDEX}"
+  --num-shards "${N_SHARDS}"
+)
+
+if [[ -n "${LIMIT}" ]]; then
+  args+=(--limit "${LIMIT}")
+fi
+if [[ "${FORCE}" == "1" ]]; then
+  args+=(--force)
+fi
+if [[ "${DRY_RUN}" == "1" ]]; then
+  args+=(--dry-run)
+fi
+
+printf 'Running'
+printf ' %q' "${args[@]}"
+printf '\n'
+"${args[@]}"
+
+echo "Finished ${SHARD_ID}: ${OUTPUT_TSV}"

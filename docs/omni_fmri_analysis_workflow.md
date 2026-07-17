@@ -21,6 +21,15 @@ possible.
 | Model tokenizer | `src/models/patch_tokenizer_3d.py`, `src/models/patch_embed_3d.py` | Dynamic 3D patch tokenization and embedding |
 | CLI/config | `src/utils/cli_app.py`, `src/utils/config_overrides.py` | YAML-backed CLI and dotted config overrides |
 | HPC launchers | `scripts/pretrain.sh`, `scripts/finetune.sh` | `torchrun` wrappers for training/fine-tuning |
+| UKB manifest | `scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py`, `prepare_ukb_manifest.py` | Build audited `eid`/`case_id`/`tag`/`nifti_path` manifest for header-ready UKB batches, or generic manifests from table/scan |
+| Omni UKB inference wrapper | `scripts/omni_pipeline/extract_omni_embeddings.py`, `merge_tsv_shards.py` | Manifest-aligned CLS extraction, NIfTI preprocessing, segment aggregation, TSV/QC logs, shard merging |
+| Omni inference HPC | `scripts/omni_pipeline/submit_omni_extraction.pbs` | PBS array template for sharded embedding extraction |
+| GWAS inputs | `scripts/omni_pipeline/prepare_gwas_inputs.py` | Covariate merge, per-embedding RankINT, pure-`eid` FID/IID tables |
+| SAIGE handoff | `scripts/omni_pipeline/prepare_saige_handoff.py` | Packages validated RankINT phenotypes/covariates for relatedness-aware GWAS handoff |
+| PLINK2 screening | `scripts/omni_pipeline/submit_plink2_gwas.pbs` | 1-768 PBS array template for linear GWAS screening |
+| Sumstats merge | `scripts/omni_pipeline/merge_plink2_sumstats.py` | Merge chr1-22 PLINK2 outputs into per-embedding genome-wide sumstats |
+| LDSC h2 | `scripts/omni_pipeline/submit_ldsc_h2.pbs`, `scripts/omni_pipeline/parse_ldsc_h2_results.py` | Munge/run LDSC h2 and parse h2/intercept summaries |
+| Loci and summary | `scripts/omni_pipeline/count_loci.py`, `summarize_omni_results.py`, `build_priority_table.py` | Count loci, produce tracker-compatible summary, and integrated priority table |
 
 ## Confirmed Inference Interface
 
@@ -83,9 +92,18 @@ Inputs:
 - Omni checkpoint, expected default `pretrain_checkpoint/checkpoint.pth`.
 - Omni config, default `configs/pretrain.yaml`.
 
+Current first-pass UKB 20227 scope:
+
+- include only header-ready batches `0001_rest9800`, `0002`, `0003`, and
+  `0009_missing_afterbench100`;
+- exclude `0004` to `0008` until header repair and re-audit confirm
+  `TR=0.735` and `dtype=float32`;
+- start from ANTs/MNI 4D NIfTI, not NeuroSTORM `.pt` frame files.
+
 Outputs:
 
-- `embeddings.tsv`: `eid`, `emb_001`, ..., `emb_768`.
+- `embeddings.tsv`: `eid`, `subject_id`, `sample_id`, `batch`, `image_path`,
+  `emb_001`, ..., `emb_768`.
 - `embeddings.failures.tsv`: failed subjects and errors.
 - `embeddings.missing_subjects.tsv`: missing image paths.
 - `embeddings.qc_summary.tsv`: row counts, embedding width, finite fraction.
@@ -93,9 +111,14 @@ Outputs:
 
 Implementation:
 
+- `prepare_header_ready_ukb_20227_manifest.py` scans the current header-ready
+  batch directories and audits `TR=0.735` plus `dtype=float32`. Its manifest
+  includes `eid`, `case_id`, `tag`, and `nifti_path`.
 - `prepare_ukb_manifest.py` builds a manifest from an existing table or path scan.
 - `extract_omni_embeddings.py` reuses Omni `extract_feat.py` functions for
   checkpoint loading, model construction, tensor conversion, and token extraction.
+- `submit_omni_extraction.pbs` runs this wrapper as a PBS array using
+  `--shard-index` and `--num-shards`.
 - If a subject has multiple 40-frame segments, the default subject-level
   embedding is the mean of segment CLS tokens. This is an explicit workflow
   assumption and can be changed with `--segment-aggregation first`.
@@ -175,13 +198,15 @@ Handoff layout should reuse:
 - pure `eid` FID/IID;
 - per-embedding phenotype names `emb_001` ... `emb_768`;
 - explicit sample inclusion summary.
+- `scripts/omni_pipeline/prepare_saige_handoff.py` to write a validated
+  combined phenotype/covariate file, trait manifest, and handoff README.
 
 TODO:
 
 - Confirm Santiago's exact SAIGE phenotype/covariate file schema and GRM/null
   model inputs.
-- Add a thin SAIGE handoff writer only after the required SAIGE column names are
-  confirmed.
+- Fill Step1/Step2 SAIGE commands only after the required column names, genotype
+  layout, null model, and sparse GRM paths are confirmed.
 
 ## D. LDSC h2
 
@@ -201,6 +226,12 @@ Outputs:
 - munged sumstats per embedding;
 - LDSC h2 logs/results;
 - summary with mean h2, h2 range, intercept, and top h2 embeddings.
+
+Parsing:
+
+- `scripts/omni_pipeline/parse_ldsc_h2_results.py` parses LDSC logs into
+  `embedding_id`, `h2`, `h2_se`, `intercept`, `intercept_se`, `lambda_gc`,
+  `mean_chi2`, and `ratio`, plus a model-level summary.
 
 ## E. Loci Counting
 

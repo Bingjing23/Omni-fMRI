@@ -19,15 +19,89 @@ These commands do not run large jobs:
 ```bash
 python -m py_compile scripts/omni_pipeline/*.py
 
+python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py --help
 python scripts/omni_pipeline/prepare_ukb_manifest.py --help
 python scripts/omni_pipeline/extract_omni_embeddings.py --help
+python scripts/omni_pipeline/merge_tsv_shards.py --help
 python scripts/omni_pipeline/prepare_gwas_inputs.py --help
+python scripts/omni_pipeline/prepare_saige_handoff.py --help
+python scripts/omni_pipeline/merge_plink2_sumstats.py --help
+python scripts/omni_pipeline/parse_ldsc_h2_results.py --help
 python scripts/omni_pipeline/count_loci.py --help
 python scripts/omni_pipeline/summarize_omni_results.py --help
 python scripts/omni_pipeline/build_priority_table.py --help
 ```
 
 ## 2. Prepare UKB Manifest
+
+For the current UKB 20227 first-pass Omni run, do not wait for every NIfTI batch.
+Start only from the header-ready MNI 4D NIfTI batches:
+
+```text
+mni_4d_20227_casebatch_0001_rest9800
+mni_4d_20227_casebatch_0002
+mni_4d_20227_casebatch_0003
+mni_4d_20227_casebatch_0009_missing_afterbench100
+```
+
+Do not include these until header repair and re-audit pass:
+
+```text
+mni_4d_20227_casebatch_0004
+mni_4d_20227_casebatch_0005
+mni_4d_20227_casebatch_0006
+mni_4d_20227_casebatch_0007
+mni_4d_20227_casebatch_0008
+```
+
+Generate the audited header-ready all-case manifest on HPC:
+
+```bash
+cd /working/lab_puyag/bingjinZ/Omni-fMRI
+
+export UKB_ROOT=/working/lab_puyag/bingjinZ/UKBB
+export OMNI_OUT=/working/lab_puyag/bingjinZ/UKBB/omni_fmri
+
+mkdir -p ${OMNI_OUT}/manifests
+
+python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
+  --ukb-root ${UKB_ROOT} \
+  --output ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv \
+  --summary-output ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.summary.tsv \
+  --failed-output ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.failed_header.tsv \
+  --force
+```
+
+Expected ready rows for the current four-batch pass:
+
+```text
+8854 + 9016 + 9037 + 178 = 27085
+```
+
+The manifest contains both the requested columns:
+
+```text
+eid case_id tag nifti_path
+```
+
+and Omni wrapper aliases:
+
+```text
+subject_id sample_id image_path batch input_kind
+```
+
+Check the audit summary before any inference:
+
+```bash
+cat ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.summary.tsv
+wc -l ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.failed_header.tsv
+```
+
+The failed-header file should contain only the header line. If not, stop and
+inspect the listed rows before submitting inference.
+
+Generic manifest modes are still available below for later reruns or alternate
+input tables.
 
 From an existing imaging table:
 
@@ -85,6 +159,49 @@ python scripts/omni_pipeline/extract_omni_embeddings.py \
 Full extraction should be submitted as a cluster job after the small run passes.
 If raw NIfTI is used instead of NPZ, set `--input-kind nifti`; the wrapper will
 call the existing Omni preprocessing function and aggregate segment CLS tokens.
+
+Dry-run one PBS extraction shard:
+
+```bash
+DRY_RUN=1 \
+PBS_ARRAY_INDEX=1 \
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv \
+CHECKPOINT=/working/lab_puyag/bingjinZ/Omni-fMRI/pretrain_checkpoint/checkpoint.pth \
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards \
+WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards \
+INPUT_KIND=nifti \
+PATH_COLUMN=nifti_path \
+N_SHARDS=64 \
+bash scripts/omni_pipeline/submit_omni_extraction.pbs
+```
+
+Submit sharded extraction:
+
+```bash
+qsub -J 1-64 \
+  -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=/working/lab_puyag/bingjinZ/Omni-fMRI/pretrain_checkpoint/checkpoint.pth,\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards,\
+INPUT_KIND=nifti,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=64,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
+```
+
+After all shards complete, merge shard TSVs:
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/embeddings/header_ready_shards/omni_embeddings_shard_*_of_064.tsv" \
+  --output ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv \
+  --summary ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.merge_summary.tsv \
+  --force
+```
+
+Also inspect all `*.failures.tsv`, `*.missing_subjects.tsv`, and
+`*.qc_summary.tsv` files before using the merged table for GWAS.
 
 ## 4. GWAS Inputs
 
@@ -153,6 +270,15 @@ Handoff requirements:
 - same inclusion set as PLINK2 where possible;
 - clear note that embeddings were RankINT transformed.
 
+Create validated handoff files:
+
+```bash
+python scripts/omni_pipeline/prepare_saige_handoff.py \
+  --gwas-input-dir outputs/omni/gwas_inputs \
+  --output-dir outputs/omni/saige_handoff \
+  --force
+```
+
 TODO:
 
 - Fill Santiago's exact SAIGE null model, sparse GRM, phenotype, and covariate
@@ -160,19 +286,36 @@ TODO:
 
 ## 7. Merge PLINK2 Chromosome Outputs
 
-This repository currently provides the GWAS array template but does not yet
-include a chromosome merge script. Merge should:
+Dry-run the expected chr1-22 merge layout:
 
-- concatenate chr1-22 output for each embedding;
-- keep one header;
-- preserve PLINK2 columns needed by LDSC: `ID`, `A1`, `REF` or another A2
-  column, `BETA`, `SE`, `P`, `OBS_CT`, `#CHROM`, `POS`;
-- gzip one genome-wide file per embedding, e.g. `emb_001.sumstats.tsv.gz`.
+```bash
+python scripts/omni_pipeline/merge_plink2_sumstats.py \
+  --plink-dir /path/to/outputs/omni/plink2 \
+  --output-dir /path/to/outputs/omni/sumstats_merged \
+  --embedding-count 768 \
+  --dry-run
+```
 
-TODO:
+Merge genome-wide sumstats after PLINK2 finishes:
 
-- Add merge/check script after confirming exact PLINK2 output suffixes on the
-  target HPC system.
+```bash
+python scripts/omni_pipeline/merge_plink2_sumstats.py \
+  --plink-dir /path/to/outputs/omni/plink2 \
+  --output-dir /path/to/outputs/omni/sumstats_merged \
+  --embedding-count 768 \
+  --force
+```
+
+Expected output:
+
+```text
+/path/to/outputs/omni/sumstats_merged/emb_001.sumstats.tsv.gz
+/path/to/outputs/omni/sumstats_merged/merge_plink2_sumstats_summary.tsv
+```
+
+The default input glob matches files like
+`emb_001/emb_001.chr1*.glm.linear*`. Override `--input-template` if the target
+HPC PLINK2 suffix differs.
 
 ## 8. LDSC h2
 
@@ -208,6 +351,15 @@ SNP_LIST=/path/to/w_hm3.snplist \
 Check allele columns before real munging. The template defaults to `A1` and
 `REF`; change `A2_COL` if the merged sumstats contain a better non-effect allele
 column.
+
+Parse LDSC h2 logs:
+
+```bash
+python scripts/omni_pipeline/parse_ldsc_h2_results.py \
+  --logs-glob '/path/to/outputs/omni/ldsc/h2/emb_*.log' \
+  --output outputs/omni/ldsc/omni_h2_summary.tsv \
+  --model-summary outputs/omni/ldsc/omni_h2_model_summary.tsv
+```
 
 ## 9. Loci Counting
 

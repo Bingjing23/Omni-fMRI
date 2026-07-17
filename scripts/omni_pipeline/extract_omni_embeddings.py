@@ -66,6 +66,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eid-column", default="eid")
     parser.add_argument("--path-column", default="image_path")
     parser.add_argument("--limit", type=int, default=None, help="Optional first-N row limit for dry runs.")
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=None,
+        help="Optional 1-based shard index for PBS array extraction.",
+    )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=None,
+        help="Total number of manifest shards. Requires --shard-index.",
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite existing outputs.")
     parser.add_argument("--dry-run", action="store_true", help="Validate manifest and paths without loading model.")
     return parser.parse_args()
@@ -105,7 +117,22 @@ def prepare_outputs(output_tsv: Path, work_dir: Path, force: bool) -> dict[str, 
     }
 
 
-def read_manifest(path: Path, eid_column: str, path_column: str, limit: int | None) -> pd.DataFrame:
+def read_manifest(
+    path: Path,
+    eid_column: str,
+    path_column: str,
+    limit: int | None,
+    shard_index: int | None,
+    num_shards: int | None,
+) -> pd.DataFrame:
+    if (shard_index is None) != (num_shards is None):
+        raise ValueError("--shard-index and --num-shards must be provided together.")
+    if shard_index is not None:
+        if num_shards is None or num_shards < 1:
+            raise ValueError("--num-shards must be >= 1.")
+        if shard_index < 1 or shard_index > num_shards:
+            raise ValueError("--shard-index must be between 1 and --num-shards.")
+
     manifest = pd.read_csv(path, sep="\t", dtype=str)
     missing = [column for column in (eid_column, path_column) if column not in manifest.columns]
     if missing:
@@ -129,6 +156,9 @@ def read_manifest(path: Path, eid_column: str, path_column: str, limit: int | No
     manifest["batch"] = manifest["batch"].fillna("").astype(str).str.strip()
     manifest["input_kind"] = manifest["input_kind"].fillna("").astype(str).str.strip()
     manifest = manifest[manifest["eid"] != ""].copy()
+    if shard_index is not None and num_shards is not None:
+        positions = np.arange(len(manifest))
+        manifest = manifest.iloc[(positions % num_shards) == (shard_index - 1)].copy()
     if limit is not None:
         manifest = manifest.head(limit)
     return manifest
@@ -205,7 +235,14 @@ def main() -> int:
     output_tsv = Path(args.output_tsv)
     work_dir = Path(args.work_dir)
     aux_paths = prepare_outputs(output_tsv, work_dir, args.force)
-    manifest = read_manifest(Path(args.manifest), args.eid_column, args.path_column, args.limit)
+    manifest = read_manifest(
+        Path(args.manifest),
+        args.eid_column,
+        args.path_column,
+        args.limit,
+        args.shard_index,
+        args.num_shards,
+    )
 
     missing_rows = [
         {
@@ -318,6 +355,8 @@ def main() -> int:
     total = int(values.size)
     qc_rows = [
         {"metric": "manifest_rows", "value": len(manifest)},
+        {"metric": "shard_index", "value": args.shard_index or ""},
+        {"metric": "num_shards", "value": args.num_shards or ""},
         {"metric": "embedded_subjects", "value": len(embedding_rows)},
         {"metric": "failed_subjects", "value": len(failure_rows)},
         {"metric": "missing_paths", "value": len(missing_rows)},

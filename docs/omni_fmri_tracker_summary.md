@@ -13,11 +13,11 @@ from completed output files.
 
 | Big parts | detailed part | Neurostorm old | Neurostorm updated | Omni-fMRI |
 | --- | --- | --- | --- | --- |
-| Embedding And GWAS Inputs | Embedding extraction | Completed in NeuroSTORM tracker | Completed in NeuroSTORM tracker | Planned. Use `prepare_ukb_manifest.py` and `extract_omni_embeddings.py`; output `eid + emb_001..emb_768`. |
+| Embedding And GWAS Inputs | Embedding extraction | Completed in NeuroSTORM tracker | Completed in NeuroSTORM tracker | Planned. Use `prepare_ukb_manifest.py`, `extract_omni_embeddings.py`, and `submit_omni_extraction.pbs`; output `eid`, metadata, and `emb_001..emb_768`. |
 | Embedding And GWAS Inputs | GWAS input preparation | Completed for 288 embeddings | Completed for 288 embeddings | Planned. Use `prepare_gwas_inputs.py`; enforce `FID=IID=pure_UKB_eid`; RankINT all 768 embeddings. |
 | Embedding And GWAS Inputs | PLINK2 GWAS screening route | Completed screening route | Completed screening route | Planned. Use `submit_plink2_gwas.pbs` as 1-768 PBS array. Screening only, not final discovery. |
-| Embedding And GWAS Inputs | SAIGE / mixed-model GWAS | Pending / collaborator route | Pending / collaborator route | Planned handoff. Reuse RankINT phenotypes and covariates; exact SAIGE schema TODO. |
-| SNP Heritability / LDSC | LDSC h2 completion | Completed for 288 | Completed for 288 | Planned for 768. Use `submit_ldsc_h2.pbs` after merged PLINK2 sumstats exist. |
+| Embedding And GWAS Inputs | SAIGE / mixed-model GWAS | Pending / collaborator route | Pending / collaborator route | Planned handoff. Use `prepare_saige_handoff.py`; exact SAIGE null model, sparse GRM, genotype layout, and commands TODO. |
+| SNP Heritability / LDSC | LDSC h2 completion | Completed for 288 | Completed for 288 | Planned for 768. Use `merge_plink2_sumstats.py`, `submit_ldsc_h2.pbs`, and `parse_ldsc_h2_results.py` after PLINK2 screening completes. |
 | SNP Heritability / LDSC | Mean h2 / range / intercept | See NeuroSTORM tracker | See NeuroSTORM tracker | Pending numeric results. |
 | SNP Heritability / LDSC | Top h2 embeddings | See NeuroSTORM tracker | See NeuroSTORM tracker | Pending numeric results; compare distributions, not embedding indices. |
 | Loci And Discovery Signal | P < 5e-8 unique regions | See NeuroSTORM tracker | See NeuroSTORM tracker | Planned. Use `count_loci.py`; threshold `P < 5e-8`. |

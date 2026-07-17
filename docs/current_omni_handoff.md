@@ -33,12 +33,18 @@ Pipeline scripts currently expected under:
 
 ```text
 scripts/omni_pipeline/
+  prepare_header_ready_ukb_20227_manifest.py
   prepare_ukb_manifest.py
   extract_omni_embeddings.py
+  merge_tsv_shards.py
   filter_omni_embeddings_by_subject_list.py
   prepare_gwas_inputs.py
+  prepare_saige_handoff.py
+  submit_omni_extraction.pbs
   submit_plink2_gwas.pbs
+  merge_plink2_sumstats.py
   submit_ldsc_h2.pbs
+  parse_ldsc_h2_results.py
   count_loci.py
   summarize_omni_results.py
   build_priority_table.py
@@ -86,17 +92,35 @@ Confirmed from code:
 Current wrapper behavior:
 
 ```text
+scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py
+  Produces the current audited header-ready all-case manifest with eid, case_id, tag, nifti_path, and header audit columns.
+
 scripts/omni_pipeline/prepare_ukb_manifest.py
   Produces case-level manifest with eid, subject_id, sample_id, image_path, batch, input_kind.
 
 scripts/omni_pipeline/extract_omni_embeddings.py
   Reads manifest and outputs eid, subject_id, sample_id, batch, image_path, emb_001..emb_768.
 
+scripts/omni_pipeline/merge_tsv_shards.py
+  Merges same-schema PBS array TSV shards after validating one consistent header.
+
 scripts/omni_pipeline/filter_omni_embeddings_by_subject_list.py
   Filters all-case Omni embeddings to an explicit NeuroSTORM subject_id keep list.
 
 scripts/omni_pipeline/prepare_gwas_inputs.py
   Merges filtered embeddings with covariates, applies RankINT per embedding, and writes GWAS-ready phenotype/covariate tables.
+
+scripts/omni_pipeline/submit_omni_extraction.pbs
+  Runs extract_omni_embeddings.py as a sharded PBS array using --shard-index and --num-shards.
+
+scripts/omni_pipeline/prepare_saige_handoff.py
+  Packages validated RankINT phenotype/covariate tables for Santiago's relatedness-aware SAIGE route without assuming final SAIGE command paths.
+
+scripts/omni_pipeline/merge_plink2_sumstats.py
+  Merges chr1-22 PLINK2 screening outputs into one genome-wide sumstats file per embedding.
+
+scripts/omni_pipeline/parse_ldsc_h2_results.py
+  Parses LDSC h2 logs into per-embedding and model-level h2/intercept summary tables.
 ```
 
 ## UKB 20227 NIfTI Status
@@ -453,12 +477,12 @@ dtype = float32
 ## Immediate Next Steps
 
 1. In the new Codex task, confirm current branch and scripts exist.
-2. Generate all-case manifests for 0001, 0002, 0003, 0009 with `--allow-duplicates`.
-3. Confirm merged manifest has 27,086 lines including header.
+2. Generate the audited all-case manifest for 0001, 0002, 0003, 0009 with `prepare_header_ready_ukb_20227_manifest.py`.
+3. Confirm the manifest has 27,086 lines including header and failed-header output has only its header.
 4. Run dry-run extraction.
 5. Run head10 real inference.
 6. Run complete 0009 real inference.
-7. Build a PBS array/sharding script for the full 27,085 header-ready cases.
+7. Use `submit_omni_extraction.pbs` for sharded full 27,085 header-ready case extraction.
 8. After all-case Omni embeddings exist, filter to NeuroSTORM first-case subject list.
 9. Prepare GWAS inputs with RankINT and pure `eid` FID/IID.
 
