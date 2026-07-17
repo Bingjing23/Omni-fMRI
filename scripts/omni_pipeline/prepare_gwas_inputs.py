@@ -2,7 +2,7 @@
 """Prepare RankINT Omni-fMRI embeddings and covariates for GWAS.
 
 Inputs:
-  - Omni embeddings TSV with columns eid, emb_001 ... emb_768.
+  - Omni embeddings TSV with columns eid, optional subject_id, emb_001 ... emb_768.
   - UKB covariate TSV with pure eid and selected covariate columns.
 
 Outputs:
@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--covariates-tsv", required=True, help="Covariate TSV with pure eid.")
     parser.add_argument("--outdir", required=True, help="Output directory.")
     parser.add_argument("--eid-column", default="eid")
+    parser.add_argument("--subject-id-column", default="subject_id")
+    parser.add_argument(
+        "--keep-subject-list",
+        default=None,
+        help=(
+            "Optional one-column NeuroSTORM subject_id list. When provided, keep only "
+            "matching subject_id rows before eid-level GWAS preparation."
+        ),
+    )
     parser.add_argument("--covariates", default=",".join(DEFAULT_COVARIATES), help="Comma-separated covariates.")
     parser.add_argument("--embedding-prefix", default="emb_", help="Embedding column prefix. Default: emb_")
     parser.add_argument("--min-nonmissing", type=int, default=1000, help="Minimum nonmissing subjects per embedding.")
@@ -66,6 +75,23 @@ def normalize_eid(value: object) -> str:
     if text.isdigit():
         return text.lstrip("0") or "0"
     return text
+
+
+def read_keep_subjects(path: str | None) -> set[str] | None:
+    if not path:
+        return None
+    keep: set[str] = set()
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            value = raw_line.strip()
+            if not value:
+                continue
+            if line_number == 1 and value == "subject_id":
+                continue
+            keep.add(value)
+    if not keep:
+        raise ValueError(f"No subject IDs loaded from --keep-subject-list: {path}")
+    return keep
 
 
 def rank_int(series: pd.Series) -> pd.Series:
@@ -104,10 +130,21 @@ def main() -> int:
 
     embeddings = pd.read_csv(args.embeddings_tsv, sep="\t", dtype={args.eid_column: str})
     covariates = pd.read_csv(args.covariates_tsv, sep="\t", dtype={args.eid_column: str}, low_memory=False)
+    keep_subjects = read_keep_subjects(args.keep_subject_list)
     for frame_name, frame in (("embeddings", embeddings), ("covariates", covariates)):
         if args.eid_column not in frame.columns:
             raise KeyError(f"Missing {args.eid_column} column in {frame_name}")
         frame[args.eid_column] = frame[args.eid_column].map(normalize_eid)
+
+    before_subject_filter = len(embeddings)
+    if keep_subjects is not None:
+        if args.subject_id_column not in embeddings.columns:
+            raise KeyError(
+                f"--keep-subject-list requires subject_id column '{args.subject_id_column}' "
+                f"in embeddings table."
+            )
+        embeddings[args.subject_id_column] = embeddings[args.subject_id_column].fillna("").astype(str).str.strip()
+        embeddings = embeddings[embeddings[args.subject_id_column].isin(keep_subjects)].copy()
 
     embedding_cols = sorted(column for column in embeddings.columns if column.startswith(args.embedding_prefix))
     if not embedding_cols:
@@ -165,6 +202,10 @@ def main() -> int:
     summary = pd.DataFrame(
         [
             {"metric": "embedding_rows_input", "value": before_embeddings},
+            {"metric": "embedding_rows_before_subject_filter", "value": before_subject_filter},
+            {"metric": "keep_subject_list", "value": args.keep_subject_list or ""},
+            {"metric": "keep_subjects_loaded", "value": len(keep_subjects) if keep_subjects is not None else ""},
+            {"metric": "embedding_rows_after_subject_filter", "value": len(embeddings)},
             {"metric": "covariate_rows_input", "value": before_covariates},
             {"metric": "embedding_rows_unique_eid", "value": len(embeddings)},
             {"metric": "covariate_rows_unique_eid", "value": len(covariates)},

@@ -7,11 +7,11 @@ manifest-driven subject alignment, optional NIfTI preprocessing, segment-level
 aggregation, TSV export, and failure/QC logs for HPC batch use.
 
 Inputs:
-  - Manifest TSV with columns `eid` and `image_path`.
+  - Manifest TSV with columns `eid`, `subject_id`, and `image_path`.
   - Omni-fMRI checkpoint and config.
 
 Outputs:
-  - embeddings TSV: eid + emb_001 ... emb_768.
+  - embeddings TSV: eid + subject_id + sample_id + image_path + emb_001 ... emb_768.
   - failure log TSV.
   - missing-subject log TSV.
   - QC summary TSV.
@@ -110,9 +110,24 @@ def read_manifest(path: Path, eid_column: str, path_column: str, limit: int | No
     missing = [column for column in (eid_column, path_column) if column not in manifest.columns]
     if missing:
         raise KeyError(f"Missing manifest columns: {missing}")
-    manifest = manifest[[eid_column, path_column]].rename(columns={eid_column: "eid", path_column: "image_path"})
+    keep_columns = [eid_column, path_column]
+    optional_columns = ["subject_id", "sample_id", "batch", "input_kind"]
+    keep_columns.extend(column for column in optional_columns if column in manifest.columns)
+    manifest = manifest[keep_columns].rename(columns={eid_column: "eid", path_column: "image_path"})
     manifest["eid"] = manifest["eid"].fillna("").astype(str).str.strip()
     manifest["image_path"] = manifest["image_path"].fillna("").astype(str).str.strip()
+    if "subject_id" not in manifest.columns:
+        manifest["subject_id"] = manifest["eid"]
+    if "sample_id" not in manifest.columns:
+        manifest["sample_id"] = manifest["image_path"].map(lambda value: Path(value).name)
+    if "batch" not in manifest.columns:
+        manifest["batch"] = ""
+    if "input_kind" not in manifest.columns:
+        manifest["input_kind"] = ""
+    manifest["subject_id"] = manifest["subject_id"].fillna("").astype(str).str.strip()
+    manifest["sample_id"] = manifest["sample_id"].fillna("").astype(str).str.strip()
+    manifest["batch"] = manifest["batch"].fillna("").astype(str).str.strip()
+    manifest["input_kind"] = manifest["input_kind"].fillna("").astype(str).str.strip()
     manifest = manifest[manifest["eid"] != ""].copy()
     if limit is not None:
         manifest = manifest.head(limit)
@@ -193,14 +208,20 @@ def main() -> int:
     manifest = read_manifest(Path(args.manifest), args.eid_column, args.path_column, args.limit)
 
     missing_rows = [
-        {"eid": row.eid, "image_path": row.image_path, "reason": "image_path missing or does not exist"}
+        {
+            "eid": row.eid,
+            "subject_id": row.subject_id,
+            "sample_id": row.sample_id,
+            "image_path": row.image_path,
+            "reason": "image_path missing or does not exist",
+        }
         for row in manifest.itertuples(index=False)
         if not row.image_path or not Path(row.image_path).exists()
     ]
 
     if args.dry_run:
         print(f"DRY_RUN manifest_rows={len(manifest)} missing_paths={len(missing_rows)}")
-        write_rows(aux_paths["missing"], ["eid", "image_path", "reason"], missing_rows)
+        write_rows(aux_paths["missing"], ["eid", "subject_id", "sample_id", "image_path", "reason"], missing_rows)
         return 0
 
     import torch
@@ -222,9 +243,20 @@ def main() -> int:
 
     for row in manifest.itertuples(index=False):
         eid = str(row.eid)
+        subject_id = str(row.subject_id)
+        sample_id = str(row.sample_id)
+        batch = str(row.batch)
         image_path = Path(str(row.image_path)).expanduser()
         if not image_path.exists():
-            failure_rows.append({"eid": eid, "image_path": str(image_path), "error": "path does not exist"})
+            failure_rows.append(
+                {
+                    "eid": eid,
+                    "subject_id": subject_id,
+                    "sample_id": sample_id,
+                    "image_path": str(image_path),
+                    "error": "path does not exist",
+                }
+            )
             continue
         try:
             npz_files = npz_files_for_subject(image_path, args.input_kind, work_dir, args)
@@ -237,12 +269,21 @@ def main() -> int:
                 width = int(embedding.shape[0])
             if int(embedding.shape[0]) != width:
                 raise ValueError(f"Inconsistent embedding width: {embedding.shape[0]} != {width}")
-            out = {"eid": eid}
+            out = {
+                "eid": eid,
+                "subject_id": subject_id,
+                "sample_id": sample_id,
+                "batch": batch,
+                "image_path": str(image_path),
+            }
             out.update({name: float(value) for name, value in zip(emb_columns(width), embedding)})
             embedding_rows.append(out)
             segment_rows.append(
                 {
                     "eid": eid,
+                    "subject_id": subject_id,
+                    "sample_id": sample_id,
+                    "batch": batch,
                     "image_path": str(image_path),
                     "segments": len(tokens),
                     "embedding_width": width,
@@ -250,14 +291,27 @@ def main() -> int:
                 }
             )
         except Exception as exc:
-            failure_rows.append({"eid": eid, "image_path": str(image_path), "error": repr(exc)})
+            failure_rows.append(
+                {
+                    "eid": eid,
+                    "subject_id": subject_id,
+                    "sample_id": sample_id,
+                    "image_path": str(image_path),
+                    "error": repr(exc),
+                }
+            )
 
     if width is None:
         width = 768
-    write_rows(output_tsv, ["eid"] + emb_columns(width), embedding_rows)
-    write_rows(aux_paths["failures"], ["eid", "image_path", "error"], failure_rows)
-    write_rows(aux_paths["missing"], ["eid", "image_path", "reason"], missing_rows)
-    write_rows(aux_paths["segment_qc"], ["eid", "image_path", "segments", "embedding_width", "aggregation"], segment_rows)
+    metadata_columns = ["eid", "subject_id", "sample_id", "batch", "image_path"]
+    write_rows(output_tsv, metadata_columns + emb_columns(width), embedding_rows)
+    write_rows(aux_paths["failures"], ["eid", "subject_id", "sample_id", "image_path", "error"], failure_rows)
+    write_rows(aux_paths["missing"], ["eid", "subject_id", "sample_id", "image_path", "reason"], missing_rows)
+    write_rows(
+        aux_paths["segment_qc"],
+        ["eid", "subject_id", "sample_id", "batch", "image_path", "segments", "embedding_width", "aggregation"],
+        segment_rows,
+    )
 
     values = np.asarray([[row[col] for col in emb_columns(width)] for row in embedding_rows], dtype=float)
     finite = int(np.isfinite(values).sum()) if values.size else 0
