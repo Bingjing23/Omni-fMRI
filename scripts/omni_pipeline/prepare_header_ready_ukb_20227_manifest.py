@@ -34,6 +34,17 @@ from pathlib import Path
 from typing import Iterable
 
 
+try:
+    import nibabel as nib
+    import numpy as np
+except ImportError as exc:  # pragma: no cover - depends on runtime environment.
+    nib = None
+    np = None
+    NIFTI_IMPORT_ERROR = exc
+else:
+    NIFTI_IMPORT_ERROR = None
+
+
 DEFAULT_BATCHES = [
     "mni_4d_20227_casebatch_0001_rest9800",
     "mni_4d_20227_casebatch_0002",
@@ -140,6 +151,12 @@ def audit_header(
     expected_dtype: str,
     min_frames: int,
 ) -> dict[str, str]:
+    if NIFTI_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "NIfTI header audit requires nibabel and numpy in the active Python environment. "
+            f"Import failed: {NIFTI_IMPORT_ERROR!r}"
+        )
+
     if not path.exists():
         return {
             "file_exists": "0",
@@ -153,9 +170,8 @@ def audit_header(
         }
 
     try:
-        import nibabel as nib
-        import numpy as np
-
+        assert nib is not None
+        assert np is not None
         img = nib.load(str(path))
         zooms = img.header.get_zooms()
         tr = float(zooms[3]) if len(zooms) > 3 else math.nan
@@ -172,7 +188,7 @@ def audit_header(
             "dtype": "",
             "raw_dtype": "",
             "shape": "",
-            "note": repr(exc),
+            "note": f"{type(exc).__name__}: {exc}",
         }
 
     problems: list[str] = []
