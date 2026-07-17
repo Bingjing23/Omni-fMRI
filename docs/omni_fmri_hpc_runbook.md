@@ -54,7 +54,9 @@ mni_4d_20227_casebatch_0007
 mni_4d_20227_casebatch_0008
 ```
 
-Generate the audited header-ready all-case manifest on HPC:
+Generate the audited header-ready all-case manifest on HPC. The audit uses
+`np.dtype(img.header.get_data_dtype()).name`, so endian-aware dtypes such as
+`<f4` or `>f4` are normalized to `float32` before readiness testing.
 
 ```bash
 cd /working/lab_puyag/bingjinZ/Omni-fMRI
@@ -98,7 +100,12 @@ wc -l ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.failed_header.tsv
 ```
 
 The failed-header file should contain only the header line. If not, stop and
-inspect the listed rows before submitting inference.
+inspect the listed rows before submitting inference:
+
+```bash
+head -n 20 ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.failed_header.tsv \
+  | cut -f1-4,11-17
+```
 
 Generic manifest modes are still available below for later reruns or alternate
 input tables.

@@ -112,8 +112,10 @@ Outputs:
 Implementation:
 
 - `prepare_header_ready_ukb_20227_manifest.py` scans the current header-ready
-  batch directories and audits `TR=0.735` plus `dtype=float32`. Its manifest
-  includes `eid`, `case_id`, `tag`, and `nifti_path`.
+  batch directories and audits `pixdim4/TR=0.735`, `dim4 >= 40`, and
+  normalized `dtype=float32`. It uses `np.dtype(img.header.get_data_dtype()).name`
+  so endian-aware dtypes such as `<f4` and `>f4` are not misclassified. Its
+  manifest includes `eid`, `case_id`, `tag`, and `nifti_path`.
 - `prepare_ukb_manifest.py` builds a manifest from an existing table or path scan.
 - `extract_omni_embeddings.py` reuses Omni `extract_feat.py` functions for
   checkpoint loading, model construction, tensor conversion, and token extraction.

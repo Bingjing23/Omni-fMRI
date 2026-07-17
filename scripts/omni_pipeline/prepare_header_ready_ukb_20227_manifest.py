@@ -15,7 +15,7 @@ Outputs:
   plus Omni-compatible aliases:
     subject_id, sample_id, image_path, batch, input_kind
   plus header audit fields:
-    file_exists, header_status, tr, dtype, shape, note
+    file_exists, header_status, pixdim4, dim4, dtype, raw_dtype, shape, note
 
 Example:
   python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
@@ -61,8 +61,10 @@ OUTPUT_COLUMNS = [
     "input_kind",
     "file_exists",
     "header_status",
-    "tr",
+    "pixdim4",
+    "dim4",
     "dtype",
+    "raw_dtype",
     "shape",
     "note",
 ]
@@ -84,8 +86,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eid-regex", default=r"(?P<eid>[0-9]{7})", help="Fallback regex extracting eid.")
     parser.add_argument("--expected-tr", type=float, default=0.735)
-    parser.add_argument("--tr-tolerance", type=float, default=1e-6)
+    parser.add_argument("--tr-tolerance", type=float, default=1e-4)
     parser.add_argument("--expected-dtype", default="float32")
+    parser.add_argument(
+        "--min-frames",
+        type=int,
+        default=40,
+        help="Minimum 4D timepoints required for Omni preprocessing. Default: 40.",
+    )
     parser.add_argument("--output", required=True, help="Output manifest TSV.")
     parser.add_argument("--summary-output", default=None, help="Optional summary TSV.")
     parser.add_argument("--failed-output", default=None, help="Optional failed-header rows TSV.")
@@ -125,46 +133,63 @@ def extract_ids(path: Path, case_pattern: re.Pattern[str], eid_pattern: re.Patte
     return eid, strip_nifti_suffix(path)
 
 
-def audit_header(path: Path, expected_tr: float, tr_tolerance: float, expected_dtype: str) -> dict[str, str]:
+def audit_header(
+    path: Path,
+    expected_tr: float,
+    tr_tolerance: float,
+    expected_dtype: str,
+    min_frames: int,
+) -> dict[str, str]:
     if not path.exists():
         return {
             "file_exists": "0",
             "header_status": "missing_path",
-            "tr": "",
+            "pixdim4": "",
+            "dim4": "",
             "dtype": "",
+            "raw_dtype": "",
             "shape": "",
             "note": "nifti_path does not exist",
         }
 
     try:
         import nibabel as nib
+        import numpy as np
 
         img = nib.load(str(path))
         zooms = img.header.get_zooms()
         tr = float(zooms[3]) if len(zooms) > 3 else math.nan
-        dtype = str(img.get_data_dtype())
+        dim4 = int(img.shape[3]) if len(img.shape) > 3 else 1
+        raw_dtype = img.header.get_data_dtype()
+        dtype = np.dtype(raw_dtype).name
         shape = "x".join(str(value) for value in img.shape)
     except Exception as exc:  # pragma: no cover - depends on real NIfTI files.
         return {
             "file_exists": "1",
             "header_status": "header_error",
-            "tr": "",
+            "pixdim4": "",
+            "dim4": "",
             "dtype": "",
+            "raw_dtype": "",
             "shape": "",
             "note": repr(exc),
         }
 
     problems: list[str] = []
     if not math.isfinite(tr) or abs(tr - expected_tr) > tr_tolerance:
-        problems.append(f"TR {tr:g} != expected {expected_tr:g}")
+        problems.append(f"TR {tr:.12g} != expected {expected_tr:.12g}")
+    if dim4 < min_frames:
+        problems.append(f"dim4 {dim4} < min_frames {min_frames}")
     if dtype != expected_dtype:
-        problems.append(f"dtype {dtype} != expected {expected_dtype}")
+        problems.append(f"dtype {dtype} != expected {expected_dtype} (raw={raw_dtype!s})")
 
     return {
         "file_exists": "1",
         "header_status": "ready" if not problems else "header_mismatch",
-        "tr": f"{tr:.12g}" if math.isfinite(tr) else "NA",
+        "pixdim4": f"{tr:.12g}" if math.isfinite(tr) else "NA",
+        "dim4": str(dim4),
         "dtype": dtype,
+        "raw_dtype": str(raw_dtype),
         "shape": shape,
         "note": "; ".join(problems),
     }
@@ -212,7 +237,13 @@ def main() -> int:
     rows: list[dict[str, object]] = []
     for tag, path in iter_nifti_paths(ukb_root, batches, args.glob):
         eid, case_id = extract_ids(path, case_pattern, eid_pattern)
-        audit = audit_header(path, args.expected_tr, args.tr_tolerance, args.expected_dtype)
+        audit = audit_header(
+            path,
+            args.expected_tr,
+            args.tr_tolerance,
+            args.expected_dtype,
+            args.min_frames,
+        )
         rows.append(
             {
                 "eid": eid,
