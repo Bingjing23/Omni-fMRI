@@ -23,6 +23,13 @@ Requirements:
     - nibabel >= 3.0
     - numpy >= 1.20
     - tqdm >= 4.60
+
+AFFINE_TARGET = np.array([
+    [-2,  0,  0,   96],
+    [ 0,  2,  0, -112],
+    [ 0,  0,  2,  -90],
+    [ 0,  0,  0,    1]
+])
 """
 
 import os
