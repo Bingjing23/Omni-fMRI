@@ -1,7 +1,9 @@
 #!/bin/bash
 #PBS -N omni_extract_embeddings
-#PBS -l select=1:ncpus=4:mem=48gb:ngpus=1
-#PBS -l walltime=24:00:00
+#PBS -l ncpus=4
+#PBS -l mem=48gb
+#PBS -l walltime=02:00:00
+#PBS -l ngpus=1
 #PBS -j oe
 
 set -euo pipefail
