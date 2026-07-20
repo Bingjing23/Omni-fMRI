@@ -214,7 +214,7 @@ cd /working/lab_puyag/bingjinZ/Omni-fMRI
 
 export UKB_ROOT=/working/lab_puyag/bingjinZ/UKBB
 export OMNI_OUT=/working/lab_puyag/bingjinZ/UKBB/omni_fmri
-export CHECKPOINT=/working/lab_puyag/bingjinZ/Omni-fMRI/pretrain_checkpoint/checkpoint.pth
+export CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth
 export NS_FIRST_SUBJECTS=/mnt/lustre/working/lab_puyag/bingjinZ/UKBB/outputs/neurostorm_embeddings_20227_mae_5ds/neurostorm_mae_5ds_7batch_one_instance_per_eid.subjects.txt
 
 mkdir -p ${OMNI_OUT}/manifests
@@ -323,17 +323,9 @@ python scripts/omni_pipeline/extract_omni_embeddings.py \
 
 ### 5. Head10 Real Inference
 
-```bash
-python scripts/omni_pipeline/extract_omni_embeddings.py \
-  --manifest ${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv \
-  --checkpoint ${CHECKPOINT} \
-  --output-tsv ${OMNI_OUT}/embeddings/omni_header_ready_head10.tsv \
-  --work-dir ${OMNI_OUT}/embeddings/work_head10 \
-  --input-kind nifti \
-  --device cuda:0 \
-  --limit 10 \
-  --force
-```
+Run this as a GPU PBS job, not on the login node. Use the `LIMIT=10`,
+`N_SHARDS=1`, and `PATH_COLUMN=nifti_path` smoke command in
+`docs/omni_fmri_hpc_runbook.md`.
 
 Check outputs:
 
@@ -353,16 +345,8 @@ eid subject_id sample_id batch image_path emb_001 ... emb_768
 
 `casebatch_0009_missing_afterbench100` has only 178 files and is the safest complete-batch test.
 
-```bash
-python scripts/omni_pipeline/extract_omni_embeddings.py \
-  --manifest ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv \
-  --checkpoint ${CHECKPOINT} \
-  --output-tsv ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100_all_cases.tsv \
-  --work-dir ${OMNI_OUT}/embeddings/work_0009_missing_afterbench100 \
-  --input-kind nifti \
-  --device cuda:0 \
-  --force
-```
+Run this with the same PBS template and `N_SHARDS=1`, using the 0009 manifest
+command in `docs/omni_fmri_hpc_runbook.md`.
 
 Check outputs:
 

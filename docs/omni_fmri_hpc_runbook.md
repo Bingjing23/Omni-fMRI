@@ -142,25 +142,66 @@ Manifest dry-run:
 ```bash
 python scripts/omni_pipeline/extract_omni_embeddings.py \
   --manifest outputs/omni/manifests/ukb_omni_manifest.tsv \
-  --checkpoint pretrain_checkpoint/checkpoint.pth \
+  --checkpoint /working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth \
   --output-tsv outputs/omni/embeddings/embeddings.tsv \
   --work-dir outputs/omni/embeddings/work \
   --input-kind npz \
   --dry-run
 ```
 
-Small local/HPC smoke run:
+Small smoke run on a GPU compute job. Direct `python ... --device cuda:0`
+should only be used inside an allocated GPU node, not on the login node. The
+PBS template can run the first 10 cases by using one shard and `LIMIT=10`:
 
 ```bash
-python scripts/omni_pipeline/extract_omni_embeddings.py \
-  --manifest outputs/omni/manifests/ukb_omni_manifest.tsv \
-  --checkpoint pretrain_checkpoint/checkpoint.pth \
-  --output-tsv outputs/omni/embeddings/embeddings.head10.tsv \
-  --work-dir outputs/omni/embeddings/work_head10 \
-  --input-kind npz \
-  --device cuda:0 \
-  --limit 10 \
+qsub -J 1-1 \
+  -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/head10_shard,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_head10,\
+INPUT_KIND=nifti,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=1,\
+LIMIT=10,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
+```
+
+Inspect timing and failures after the head10 job finishes:
+
+```bash
+cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.qc_summary.tsv
+head ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.segment_qc.tsv
+cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.failures.tsv
+```
+
+The wrapper records `preprocess_seconds`, `inference_seconds`,
+`subject_seconds`, and `seconds_per_segment` in `*.segment_qc.tsv`, plus run
+totals and mean timings in `*.qc_summary.tsv`.
+
+Then run the small complete batch 0009 with the same PBS template:
+
+```bash
+python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
+  --ukb-root ${UKB_ROOT} \
+  --batches mni_4d_20227_casebatch_0009_missing_afterbench100 \
+  --output ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv \
+  --summary-output ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.summary.tsv \
+  --failed-output ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.failed_header.tsv \
   --force
+```
+
+```bash
+qsub -J 1-1 \
+  -v MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv,\
+CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/batch_0009_shard,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_batch_0009,\
+INPUT_KIND=nifti,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=1,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
 ```
 
 Full extraction should be submitted as a cluster job after the small run passes.
@@ -173,7 +214,7 @@ Dry-run one PBS extraction shard:
 DRY_RUN=1 \
 PBS_ARRAY_INDEX=1 \
 MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv \
-CHECKPOINT=/working/lab_puyag/bingjinZ/Omni-fMRI/pretrain_checkpoint/checkpoint.pth \
+CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth \
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards \
 WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards \
 INPUT_KIND=nifti \
@@ -187,7 +228,7 @@ Submit sharded extraction:
 ```bash
 qsub -J 1-64 \
   -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
-CHECKPOINT=/working/lab_puyag/bingjinZ/Omni-fMRI/pretrain_checkpoint/checkpoint.pth,\
+CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards,\
 WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards,\
 INPUT_KIND=nifti,\

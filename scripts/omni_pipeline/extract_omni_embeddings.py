@@ -32,6 +32,7 @@ import argparse
 import csv
 import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -231,6 +232,7 @@ def write_rows(path: Path, fieldnames: list[str], rows: list[dict[str, object]])
 
 
 def main() -> int:
+    run_start = time.perf_counter()
     args = parse_args()
     output_tsv = Path(args.output_tsv)
     work_dir = Path(args.work_dir)
@@ -277,8 +279,11 @@ def main() -> int:
     failure_rows: list[dict[str, object]] = []
     segment_rows: list[dict[str, object]] = []
     width: int | None = None
+    total_preprocess_seconds = 0.0
+    total_inference_seconds = 0.0
 
     for row in manifest.itertuples(index=False):
+        subject_start = time.perf_counter()
         eid = str(row.eid)
         subject_id = str(row.subject_id)
         sample_id = str(row.sample_id)
@@ -296,12 +301,16 @@ def main() -> int:
             )
             continue
         try:
+            preprocess_start = time.perf_counter()
             npz_files = npz_files_for_subject(image_path, args.input_kind, work_dir, args)
-            tokens = [
-                extract_one_npz(npz_path, backbone, spatial_size, in_chans, args)
-                for npz_path in npz_files
-            ]
+            preprocess_seconds = time.perf_counter() - preprocess_start
+            inference_start = time.perf_counter()
+            tokens = [extract_one_npz(npz_path, backbone, spatial_size, in_chans, args) for npz_path in npz_files]
+            inference_seconds = time.perf_counter() - inference_start
             embedding = aggregate_segments(tokens, args.segment_aggregation)
+            subject_seconds = time.perf_counter() - subject_start
+            total_preprocess_seconds += preprocess_seconds
+            total_inference_seconds += inference_seconds
             if width is None:
                 width = int(embedding.shape[0])
             if int(embedding.shape[0]) != width:
@@ -325,6 +334,10 @@ def main() -> int:
                     "segments": len(tokens),
                     "embedding_width": width,
                     "aggregation": args.segment_aggregation,
+                    "preprocess_seconds": f"{preprocess_seconds:.6f}",
+                    "inference_seconds": f"{inference_seconds:.6f}",
+                    "subject_seconds": f"{subject_seconds:.6f}",
+                    "seconds_per_segment": f"{inference_seconds / len(tokens):.6f}" if tokens else "nan",
                 }
             )
         except Exception as exc:
@@ -346,10 +359,26 @@ def main() -> int:
     write_rows(aux_paths["missing"], ["eid", "subject_id", "sample_id", "image_path", "reason"], missing_rows)
     write_rows(
         aux_paths["segment_qc"],
-        ["eid", "subject_id", "sample_id", "batch", "image_path", "segments", "embedding_width", "aggregation"],
+        [
+            "eid",
+            "subject_id",
+            "sample_id",
+            "batch",
+            "image_path",
+            "segments",
+            "embedding_width",
+            "aggregation",
+            "preprocess_seconds",
+            "inference_seconds",
+            "subject_seconds",
+            "seconds_per_segment",
+        ],
         segment_rows,
     )
 
+    total_run_seconds = time.perf_counter() - run_start
+    embedded_subjects = len(embedding_rows)
+    total_segments = sum(int(row["segments"]) for row in segment_rows)
     values = np.asarray([[row[col] for col in emb_columns(width)] for row in embedding_rows], dtype=float)
     finite = int(np.isfinite(values).sum()) if values.size else 0
     total = int(values.size)
@@ -364,6 +393,18 @@ def main() -> int:
         {"metric": "finite_embedding_values", "value": finite},
         {"metric": "total_embedding_values", "value": total},
         {"metric": "finite_fraction", "value": finite / total if total else math.nan},
+        {"metric": "total_segments", "value": total_segments},
+        {"metric": "total_run_seconds", "value": f"{total_run_seconds:.6f}"},
+        {"metric": "total_preprocess_seconds", "value": f"{total_preprocess_seconds:.6f}"},
+        {"metric": "total_inference_seconds", "value": f"{total_inference_seconds:.6f}"},
+        {
+            "metric": "mean_seconds_per_embedded_subject",
+            "value": f"{total_run_seconds / embedded_subjects:.6f}" if embedded_subjects else "nan",
+        },
+        {
+            "metric": "mean_inference_seconds_per_segment",
+            "value": f"{total_inference_seconds / total_segments:.6f}" if total_segments else "nan",
+        },
     ]
     write_rows(aux_paths["qc"], ["metric", "value"], qc_rows)
     print(f"Wrote embeddings: {output_tsv}")
