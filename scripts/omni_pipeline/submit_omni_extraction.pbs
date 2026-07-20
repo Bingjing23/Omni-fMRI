@@ -59,6 +59,25 @@ SHARD_ID="$(printf "shard_%03d_of_%03d" "${INDEX}" "${N_SHARDS}")"
 OUTPUT_TSV="${OMNI_OUT_DIR}/omni_embeddings_${SHARD_ID}.tsv"
 WORK_DIR="${WORK_ROOT}/${SHARD_ID}"
 
+echo "Start: $(date)"
+echo "Host: $(hostname)"
+echo "PBS_JOBID=${PBS_JOBID:-}"
+echo "PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX:-}"
+echo "REPO_ROOT=${REPO_ROOT}"
+echo "PYTHON_BIN=${PYTHON_BIN}"
+echo "MANIFEST=${MANIFEST}"
+echo "CHECKPOINT=${CHECKPOINT}"
+echo "OMNI_OUT_DIR=${OMNI_OUT_DIR}"
+echo "WORK_ROOT=${WORK_ROOT}"
+echo "INPUT_KIND=${INPUT_KIND}"
+echo "PATH_COLUMN=${PATH_COLUMN}"
+echo "N_SHARDS=${N_SHARDS}"
+echo "INDEX=${INDEX}"
+echo "LIMIT=${LIMIT}"
+echo "FORCE=${FORCE}"
+echo "DRY_RUN=${DRY_RUN}"
+echo "DEVICE=${DEVICE}"
+
 args=(
   "${PYTHON_BIN}" scripts/omni_pipeline/extract_omni_embeddings.py
   --manifest "${MANIFEST}"
@@ -89,4 +108,5 @@ printf ' %q' "${args[@]}"
 printf '\n'
 "${args[@]}"
 
+echo "Done: $(date)"
 echo "Finished ${SHARD_ID}: ${OUTPUT_TSV}"

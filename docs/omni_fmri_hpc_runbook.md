@@ -21,6 +21,7 @@ python -m py_compile scripts/omni_pipeline/*.py
 
 python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py --help
 python scripts/omni_pipeline/prepare_ukb_manifest.py --help
+python scripts/omni_pipeline/preprocess_omni_nifti_segments.py --help
 python scripts/omni_pipeline/extract_omni_embeddings.py --help
 python scripts/omni_pipeline/merge_tsv_shards.py --help
 python scripts/omni_pipeline/prepare_gwas_inputs.py --help
@@ -204,7 +205,15 @@ finite_fraction close to 1.0
 embedding TSV line count = 11 including header
 ```
 
-Then run the small complete batch 0009 with the same PBS template:
+Recommended production route: split CPU preprocessing from GPU inference. This
+matches the stable NeuroSTORM-style pattern: CPU array first creates reusable
+model input files; GPU array only runs the foundation model.
+
+### 3a. CPU Preprocessing: NIfTI To NPZ Segments
+
+First run the small complete batch 0009 as a CPU array. Do not run all 178
+cases in one 2-hour GPU job; NIfTI preprocessing alone can exceed the walltime.
+Use a small CPU PBS array, for example 16 shards.
 
 ```bash
 python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
@@ -217,26 +226,170 @@ python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
 ```
 
 ```bash
-qsub -q gpu \
-  -N omni_0009 \
-  -o ${OMNI_OUT}/logs/pbs/omni_0009.out \
-  -e ${OMNI_OUT}/logs/pbs/omni_0009.err \
+qsub \
+  -N omni_0009_npz \
+  -o ${OMNI_OUT}/logs/pbs/omni_0009_npz.o \
+  -e ${OMNI_OUT}/logs/pbs/omni_0009_npz.e \
+  -J 1-16 \
   -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
 PYTHON_BIN=${OMNI_PYTHON},\
 MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv,\
-CHECKPOINT=${CHECKPOINT},\
-OMNI_OUT_DIR=${OMNI_OUT}/embeddings/batch_0009_shard,\
-WORK_ROOT=${OMNI_OUT}/embeddings/work_batch_0009,\
-INPUT_KIND=nifti,\
+NPZ_ROOT=${OMNI_OUT}/preprocessed_npz/batch_0009,\
+NPZ_MANIFEST_DIR=${OMNI_OUT}/manifests/batch_0009_npz_shards,\
 PATH_COLUMN=nifti_path,\
-N_SHARDS=1,\
+N_SHARDS=16,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_preprocess.pbs
+```
+
+After the 0009 preprocessing array finishes, inspect and merge the NPZ
+manifests:
+
+```bash
+ls ${OMNI_OUT}/manifests/batch_0009_npz_shards/*.preprocess_qc.tsv | wc -l
+grep -H 'failed_cases' ${OMNI_OUT}/manifests/batch_0009_npz_shards/*.preprocess_qc.tsv
+grep -H 'preprocessed_cases' ${OMNI_OUT}/manifests/batch_0009_npz_shards/*.preprocess_qc.tsv
+grep -H 'mean_seconds_per_case' ${OMNI_OUT}/manifests/batch_0009_npz_shards/*.preprocess_qc.tsv
+```
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/manifests/batch_0009_npz_shards/omni_npz_manifest_shard_*_of_016.tsv" \
+  --output ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100_npz.tsv \
+  --summary ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100_npz.merge_summary.tsv \
+  --force
+```
+
+Expected NPZ manifest line count is 179 including the header:
+
+```bash
+wc -l ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100_npz.tsv
+head -n 2 ${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100_npz.tsv
+```
+
+### 3b. GPU Inference: NPZ Segments To Omni Embeddings
+
+Run GPU inference from the NPZ manifest. This stage should be much faster than
+the original NIfTI-coupled run because the GPU job no longer does NIfTI
+preprocessing or compressed NPZ writing.
+
+```bash
+qsub -q gpu \
+  -N omni_0009_gpu \
+  -o ${OMNI_OUT}/logs/pbs/omni_0009_gpu.o \
+  -e ${OMNI_OUT}/logs/pbs/omni_0009_gpu.e \
+  -J 1-16 \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100_npz.tsv,\
+CHECKPOINT=${CHECKPOINT},\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/batch_0009_gpu_shards,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_batch_0009_gpu,\
+INPUT_KIND=npz,\
+PATH_COLUMN=image_path,\
+N_SHARDS=16,\
 FORCE=1 \
   scripts/omni_pipeline/submit_omni_extraction.pbs
 ```
 
-Full extraction should be submitted as a cluster job after the small run passes.
-If raw NIfTI is used instead of NPZ, set `--input-kind nifti`; the wrapper will
-call the existing Omni preprocessing function and aggregate segment CLS tokens.
+After GPU inference finishes, inspect and merge embedding shards:
+
+```bash
+ls ${OMNI_OUT}/embeddings/batch_0009_gpu_shards/*.qc_summary.tsv | wc -l
+grep -H 'failed_subjects' ${OMNI_OUT}/embeddings/batch_0009_gpu_shards/*.qc_summary.tsv
+grep -H 'embedded_subjects' ${OMNI_OUT}/embeddings/batch_0009_gpu_shards/*.qc_summary.tsv
+grep -H 'mean_inference_seconds_per_segment' ${OMNI_OUT}/embeddings/batch_0009_gpu_shards/*.qc_summary.tsv
+```
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/embeddings/batch_0009_gpu_shards/omni_embeddings_shard_*_of_016.tsv" \
+  --output ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100.tsv \
+  --summary ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100.merge_summary.tsv \
+  --force
+```
+
+Expected embedding TSV line count is 179 including the header:
+
+```bash
+wc -l ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100.tsv
+head -n 2 ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100.tsv
+```
+
+### 3c. Full Header-Ready Run
+
+If the split 0009 route passes, run the same two stages for all 27,085
+header-ready cases.
+
+CPU preprocessing all header-ready cases:
+
+```bash
+qsub \
+  -N omni_hdr_npz \
+  -o ${OMNI_OUT}/logs/pbs/omni_hdr_npz.o \
+  -e ${OMNI_OUT}/logs/pbs/omni_hdr_npz.e \
+  -J 1-768 \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+NPZ_ROOT=${OMNI_OUT}/preprocessed_npz/header_ready,\
+NPZ_MANIFEST_DIR=${OMNI_OUT}/manifests/header_ready_npz_shards,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=768,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_preprocess.pbs
+```
+
+Merge all-case NPZ manifest:
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/manifests/header_ready_npz_shards/omni_npz_manifest_shard_*_of_768.tsv" \
+  --output ${OMNI_OUT}/manifests/manifest_header_ready_all_cases_npz.tsv \
+  --summary ${OMNI_OUT}/manifests/manifest_header_ready_all_cases_npz.merge_summary.tsv \
+  --force
+```
+
+GPU inference all header-ready cases from NPZ:
+
+```bash
+qsub -q gpu -J 1-768 \
+  -N omni_hdr_gpu \
+  -o ${OMNI_OUT}/logs/pbs/omni_hdr_gpu.o \
+  -e ${OMNI_OUT}/logs/pbs/omni_hdr_gpu.e \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases_npz.tsv,\
+CHECKPOINT=${CHECKPOINT},\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_gpu_shards,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_gpu,\
+INPUT_KIND=npz,\
+PATH_COLUMN=image_path,\
+N_SHARDS=768,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
+```
+
+Merge all-case embeddings:
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/embeddings/header_ready_gpu_shards/omni_embeddings_shard_*_of_768.tsv" \
+  --output ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv \
+  --summary ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.merge_summary.tsv \
+  --force
+```
+
+Expected all-case embedding TSV line count is 27,086 including the header:
+
+```bash
+wc -l ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv
+head -n 2 ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv
+```
+
+The older single-stage NIfTI-to-embedding route remains available for small
+smoke tests, but it is not recommended for the full run because CPU
+preprocessing can dominate GPU walltime.
 
 Dry-run one PBS extraction shard:
 

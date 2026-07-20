@@ -1,0 +1,83 @@
+#!/bin/bash
+#PBS -N omni_preprocess_npz
+#PBS -l ncpus=4
+#PBS -l mem=48gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+# Purpose:
+#   CPU-only Omni preprocessing stage. Converts manifest NIfTI paths into
+#   per-case NPZ segment directories and writes a shard-level NPZ manifest.
+#   Submit without -J for smoke tests and with qsub -J for sharded batches.
+#
+# Required environment variables:
+#   MANIFEST       Input audited NIfTI manifest.
+#   NPZ_ROOT       Root directory for preprocessed NPZ segment directories.
+#   NPZ_MANIFEST_DIR  Directory for shard-level NPZ manifests and QC.
+#
+# Optional environment variables:
+#   REPO_ROOT      Repository root. Default: PBS_O_WORKDIR, then current dir.
+#   PYTHON_BIN     Default: python.
+#   PATH_COLUMN    Default: nifti_path.
+#   N_SHARDS       Default: 1 for non-array jobs.
+#   LIMIT          Optional per-shard first-N limit.
+#   FORCE          If 1, overwrite output TSVs.
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+MANIFEST="${MANIFEST:?Set MANIFEST}"
+NPZ_ROOT="${NPZ_ROOT:?Set NPZ_ROOT}"
+NPZ_MANIFEST_DIR="${NPZ_MANIFEST_DIR:?Set NPZ_MANIFEST_DIR}"
+REPO_ROOT="${REPO_ROOT:-${PBS_O_WORKDIR:-$(pwd)}}"
+PATH_COLUMN="${PATH_COLUMN:-nifti_path}"
+N_SHARDS="${N_SHARDS:-1}"
+INDEX="${PBS_ARRAY_INDEX:-1}"
+LIMIT="${LIMIT:-}"
+FORCE="${FORCE:-0}"
+
+cd "${REPO_ROOT}"
+mkdir -p "${NPZ_ROOT}" "${NPZ_MANIFEST_DIR}"
+
+SHARD_ID="$(printf "shard_%03d_of_%03d" "${INDEX}" "${N_SHARDS}")"
+OUTPUT_MANIFEST="${NPZ_MANIFEST_DIR}/omni_npz_manifest_${SHARD_ID}.tsv"
+
+echo "Start: $(date)"
+echo "Host: $(hostname)"
+echo "PBS_JOBID=${PBS_JOBID:-}"
+echo "PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX:-}"
+echo "REPO_ROOT=${REPO_ROOT}"
+echo "PYTHON_BIN=${PYTHON_BIN}"
+echo "MANIFEST=${MANIFEST}"
+echo "NPZ_ROOT=${NPZ_ROOT}"
+echo "NPZ_MANIFEST_DIR=${NPZ_MANIFEST_DIR}"
+echo "PATH_COLUMN=${PATH_COLUMN}"
+echo "N_SHARDS=${N_SHARDS}"
+echo "INDEX=${INDEX}"
+echo "LIMIT=${LIMIT}"
+echo "FORCE=${FORCE}"
+
+args=(
+  "${PYTHON_BIN}" scripts/omni_pipeline/preprocess_omni_nifti_segments.py
+  --manifest "${MANIFEST}"
+  --output-root "${NPZ_ROOT}"
+  --output-manifest "${OUTPUT_MANIFEST}"
+  --path-column "${PATH_COLUMN}"
+  --shard-index "${INDEX}"
+  --num-shards "${N_SHARDS}"
+)
+
+if [[ -n "${LIMIT}" ]]; then
+  args+=(--limit "${LIMIT}")
+fi
+if [[ "${FORCE}" == "1" ]]; then
+  args+=(--force)
+fi
+
+printf 'Running'
+printf ' %q' "${args[@]}"
+printf '\n'
+"${args[@]}"
+
+echo "Done: $(date)"
+echo "Finished ${SHARD_ID}: ${OUTPUT_MANIFEST}"

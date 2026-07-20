@@ -35,6 +35,8 @@ Pipeline scripts currently expected under:
 scripts/omni_pipeline/
   prepare_header_ready_ukb_20227_manifest.py
   prepare_ukb_manifest.py
+  preprocess_omni_nifti_segments.py
+  submit_omni_preprocess.pbs
   extract_omni_embeddings.py
   merge_tsv_shards.py
   filter_omni_embeddings_by_subject_list.py
@@ -97,6 +99,12 @@ scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py
 
 scripts/omni_pipeline/prepare_ukb_manifest.py
   Produces case-level manifest with eid, subject_id, sample_id, image_path, batch, input_kind.
+
+scripts/omni_pipeline/preprocess_omni_nifti_segments.py
+  CPU-only stage that converts NIfTI manifest rows into per-case NPZ segment directories and writes an NPZ manifest for GPU inference.
+
+scripts/omni_pipeline/submit_omni_preprocess.pbs
+  PBS wrapper for CPU preprocessing arrays. Use this before GPU inference for production-scale Omni runs.
 
 scripts/omni_pipeline/extract_omni_embeddings.py
   Reads manifest and outputs eid, subject_id, sample_id, batch, image_path, emb_001..emb_768.

@@ -22,7 +22,8 @@ possible.
 | CLI/config | `src/utils/cli_app.py`, `src/utils/config_overrides.py` | YAML-backed CLI and dotted config overrides |
 | HPC launchers | `scripts/pretrain.sh`, `scripts/finetune.sh` | `torchrun` wrappers for training/fine-tuning |
 | UKB manifest | `scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py`, `prepare_ukb_manifest.py` | Build audited `eid`/`case_id`/`tag`/`nifti_path` manifest for header-ready UKB batches, or generic manifests from table/scan |
-| Omni UKB inference wrapper | `scripts/omni_pipeline/extract_omni_embeddings.py`, `merge_tsv_shards.py` | Manifest-aligned CLS extraction, NIfTI preprocessing, segment aggregation, TSV/QC logs, shard merging |
+| Omni CPU preprocessing | `scripts/omni_pipeline/preprocess_omni_nifti_segments.py`, `submit_omni_preprocess.pbs` | CPU-only NIfTI to per-case NPZ segment directories and NPZ manifest shards |
+| Omni UKB inference wrapper | `scripts/omni_pipeline/extract_omni_embeddings.py`, `submit_omni_extraction.pbs`, `merge_tsv_shards.py` | Manifest-aligned CLS extraction from NPZ directories, segment aggregation, TSV/QC logs, shard merging |
 | Omni inference HPC | `scripts/omni_pipeline/submit_omni_extraction.pbs` | PBS array template for sharded embedding extraction |
 | GWAS inputs | `scripts/omni_pipeline/prepare_gwas_inputs.py` | Covariate merge, per-embedding RankINT, pure-`eid` FID/IID tables |
 | SAIGE handoff | `scripts/omni_pipeline/prepare_saige_handoff.py` | Packages validated RankINT phenotypes/covariates for relatedness-aware GWAS handoff |
@@ -116,6 +117,11 @@ Implementation:
   normalized `dtype=float32`. It uses `np.dtype(img.header.get_data_dtype()).name`
   so endian-aware dtypes such as `<f4` and `>f4` are not misclassified. Its
   manifest includes `eid`, `case_id`, `tag`, and `nifti_path`.
+- Recommended production route separates CPU and GPU jobs:
+  `preprocess_omni_nifti_segments.py` / `submit_omni_preprocess.pbs` first
+  convert NIfTI to per-case NPZ segment directories, then
+  `extract_omni_embeddings.py` / `submit_omni_extraction.pbs` run GPU inference
+  with `--input-kind npz` and aggregate segment CLS tokens.
 - `prepare_ukb_manifest.py` builds a manifest from an existing table or path scan.
 - `extract_omni_embeddings.py` reuses Omni `extract_feat.py` functions for
   checkpoint loading, model construction, tensor conversion, and token extraction.
