@@ -32,6 +32,7 @@ set -euo pipefail
 #   LIMIT           Optional per-shard first-N limit for smoke tests.
 #   FORCE           If 1, overwrite existing shard outputs.
 #   DRY_RUN         If 1, validate shard manifest paths without loading the model.
+#   REPO_ROOT       Repository root. Default: PBS_O_WORKDIR, then current dir.
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MANIFEST="${MANIFEST:?Set MANIFEST}"
@@ -48,6 +49,9 @@ SEGMENT_AGG="${SEGMENT_AGG:-mean}"
 LIMIT="${LIMIT:-}"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+REPO_ROOT="${REPO_ROOT:-${PBS_O_WORKDIR:-$(pwd)}}"
+
+cd "${REPO_ROOT}"
 
 mkdir -p "${OMNI_OUT_DIR}" "${WORK_ROOT}"
 
