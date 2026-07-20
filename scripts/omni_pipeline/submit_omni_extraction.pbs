@@ -3,14 +3,14 @@
 #PBS -l select=1:ncpus=4:mem=48gb:ngpus=1
 #PBS -l walltime=24:00:00
 #PBS -j oe
-#PBS -J 1-64
 
 set -euo pipefail
 
 # Purpose:
-#   Run sharded Omni-fMRI embedding extraction from a manifest. Each PBS array
-#   task writes one shard-level embedding TSV plus failure and QC logs. Merge
-#   shard outputs only after all array tasks finish successfully.
+#   Run Omni-fMRI embedding extraction from a manifest. Submit without -J for
+#   smoke tests and with `qsub -J 1-64` for sharded all-case extraction. Each
+#   array task writes one shard-level embedding TSV plus failure and QC logs.
+#   Merge shard outputs only after all array tasks finish successfully.
 #
 # Required environment variables:
 #   MANIFEST       Input manifest TSV with eid, subject_id, image_path columns.
@@ -21,7 +21,8 @@ set -euo pipefail
 # Optional environment variables:
 #   PYTHON_BIN      Default: python
 #   INPUT_KIND      Default: nifti. Use npz when manifest paths already point to NPZ.
-#   N_SHARDS        Default: PBS_ARRAY_INDEX range size if set manually, else 64.
+#   N_SHARDS        Default: 1 for non-array jobs, otherwise set this equal to
+#                   the qsub -J shard count, e.g. 64.
 #   DEVICE          Default: cuda:0
 #   CONFIG          Default: configs/pretrain.yaml
 #   PATH_COLUMN     Default: image_path. Use nifti_path for audited UKB manifests.
@@ -36,7 +37,7 @@ CHECKPOINT="${CHECKPOINT:?Set CHECKPOINT}"
 OMNI_OUT_DIR="${OMNI_OUT_DIR:?Set OMNI_OUT_DIR}"
 WORK_ROOT="${WORK_ROOT:?Set WORK_ROOT}"
 INPUT_KIND="${INPUT_KIND:-nifti}"
-N_SHARDS="${N_SHARDS:-64}"
+N_SHARDS="${N_SHARDS:-1}"
 INDEX="${PBS_ARRAY_INDEX:-1}"
 DEVICE="${DEVICE:-cuda:0}"
 CONFIG="${CONFIG:-configs/pretrain.yaml}"

@@ -151,10 +151,12 @@ python scripts/omni_pipeline/extract_omni_embeddings.py \
 
 Small smoke run on a GPU compute job. Direct `python ... --device cuda:0`
 should only be used inside an allocated GPU node, not on the login node. The
-PBS template can run the first 10 cases by using one shard and `LIMIT=10`:
+PBS template can run the first 10 cases as a normal single GPU job by using
+`N_SHARDS=1` and `LIMIT=10`. Do not use `qsub -J 1-1`; this PBS installation
+requires array ranges such as `1-64`, and `1-1` is rejected.
 
 ```bash
-qsub -J 1-1 \
+qsub \
   -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
 CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/head10_shard,\
@@ -192,7 +194,7 @@ python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
 ```
 
 ```bash
-qsub -J 1-1 \
+qsub \
   -v MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv,\
 CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/batch_0009_shard,\
