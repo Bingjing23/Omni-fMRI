@@ -63,8 +63,11 @@ cd /working/lab_puyag/bingjinZ/Omni-fMRI
 
 export UKB_ROOT=/working/lab_puyag/bingjinZ/UKBB
 export OMNI_OUT=/working/lab_puyag/bingjinZ/UKBB/omni_fmri
+export CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth
+export OMNI_PYTHON=/working/lab_puyag/bingjinZ/anaconda3/envs/omnifmri/bin/python
 
 mkdir -p ${OMNI_OUT}/manifests
+mkdir -p ${OMNI_OUT}/logs/pbs
 
 python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
   --ukb-root ${UKB_ROOT} \
@@ -156,9 +159,14 @@ PBS template can run the first 10 cases as a normal single GPU job by using
 requires array ranges such as `1-64`, and `1-1` is rejected.
 
 ```bash
-qsub \
-  -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
-CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
+qsub -q gpu \
+  -N omni_head10 \
+  -o ${OMNI_OUT}/logs/pbs/omni_head10.out \
+  -e ${OMNI_OUT}/logs/pbs/omni_head10.err \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=${CHECKPOINT},\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/head10_shard,\
 WORK_ROOT=${OMNI_OUT}/embeddings/work_head10,\
 INPUT_KIND=nifti,\
@@ -172,14 +180,29 @@ FORCE=1 \
 Inspect timing and failures after the head10 job finishes:
 
 ```bash
+cat ${OMNI_OUT}/logs/pbs/omni_head10.out
+cat ${OMNI_OUT}/logs/pbs/omni_head10.err
 cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.qc_summary.tsv
 head ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.segment_qc.tsv
 cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.failures.tsv
+wc -l ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.tsv
+head -n 2 ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.tsv
 ```
 
 The wrapper records `preprocess_seconds`, `inference_seconds`,
 `subject_seconds`, and `seconds_per_segment` in `*.segment_qc.tsv`, plus run
 totals and mean timings in `*.qc_summary.tsv`.
+
+Head10 pass criteria:
+
+```text
+embedded_subjects = 10
+failed_subjects = 0
+missing_paths = 0
+embedding_width = 768
+finite_fraction close to 1.0
+embedding TSV line count = 11 including header
+```
 
 Then run the small complete batch 0009 with the same PBS template:
 
@@ -194,9 +217,14 @@ python scripts/omni_pipeline/prepare_header_ready_ukb_20227_manifest.py \
 ```
 
 ```bash
-qsub \
-  -v MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv,\
-CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
+qsub -q gpu \
+  -N omni_0009 \
+  -o ${OMNI_OUT}/logs/pbs/omni_0009.out \
+  -e ${OMNI_OUT}/logs/pbs/omni_0009.err \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_0009_missing_afterbench100.tsv,\
+CHECKPOINT=${CHECKPOINT},\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/batch_0009_shard,\
 WORK_ROOT=${OMNI_OUT}/embeddings/work_batch_0009,\
 INPUT_KIND=nifti,\
@@ -228,9 +256,14 @@ bash scripts/omni_pipeline/submit_omni_extraction.pbs
 Submit sharded extraction:
 
 ```bash
-qsub -J 1-64 \
-  -v MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
-CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth,\
+qsub -q gpu -J 1-64 \
+  -N omni_hdrready \
+  -o /dev/null \
+  -e ${OMNI_OUT}/logs/pbs/ \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=${CHECKPOINT},\
 OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards,\
 WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards,\
 INPUT_KIND=nifti,\
@@ -252,6 +285,26 @@ python scripts/omni_pipeline/merge_tsv_shards.py \
 
 Also inspect all `*.failures.tsv`, `*.missing_subjects.tsv`, and
 `*.qc_summary.tsv` files before using the merged table for GWAS.
+
+### PBS/GPU Lessons Learned
+
+- Submit GPU smoke and inference jobs to the `gpu` queue explicitly. The route
+  queue sent `ngpus=1` jobs to `short`, which has no GPU resources and produced
+  `Can Never Run: Insufficient amount of resource: ngpus`.
+- Use the NeuroSTORM-compatible resource style in
+  `submit_omni_extraction.pbs`: `#PBS -l ncpus=4`, `mem=48gb`,
+  `walltime=02:00:00`, `ngpus=1`. Do not mix `select=...` with
+  `-l ncpus=...,ngpus=1`.
+- Do not use `qsub -J 1-1` on this PBS installation. Single smoke jobs should
+  omit `-J`; all-case jobs can use ranges such as `qsub -J 1-64`.
+- Pass `REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI`. Without an explicit
+  repo root, PBS may start in `/mnt/backedup/home/bingjinZ`, causing
+  `python: can't open file ... scripts/omni_pipeline/extract_omni_embeddings.py`.
+- Pass `PYTHON_BIN=/working/lab_puyag/bingjinZ/anaconda3/envs/omnifmri/bin/python`.
+  The default `python` lacked `pandas` in the GPU job environment.
+- Write smoke-job stdout/stderr to explicit files such as
+  `${OMNI_OUT}/logs/pbs/omni_head10.out`; using only an error directory can make
+  early failures hard to inspect.
 
 ## 4. GWAS Inputs
 

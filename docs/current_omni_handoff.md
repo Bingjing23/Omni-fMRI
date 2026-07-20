@@ -215,10 +215,12 @@ cd /working/lab_puyag/bingjinZ/Omni-fMRI
 export UKB_ROOT=/working/lab_puyag/bingjinZ/UKBB
 export OMNI_OUT=/working/lab_puyag/bingjinZ/UKBB/omni_fmri
 export CHECKPOINT=/working/lab_puyag/bingjinZ/ModelZoo/Omni-fMRI/checkpoint.pth
+export OMNI_PYTHON=/working/lab_puyag/bingjinZ/anaconda3/envs/omnifmri/bin/python
 export NS_FIRST_SUBJECTS=/mnt/lustre/working/lab_puyag/bingjinZ/UKBB/outputs/neurostorm_embeddings_20227_mae_5ds/neurostorm_mae_5ds_7batch_one_instance_per_eid.subjects.txt
 
 mkdir -p ${OMNI_OUT}/manifests
 mkdir -p ${OMNI_OUT}/embeddings
+mkdir -p ${OMNI_OUT}/logs/pbs
 mkdir -p ${OMNI_OUT}/gwas_inputs_neurostorm_first_cases
 ```
 
@@ -327,18 +329,54 @@ Run this as a GPU PBS job, not on the login node. Use the `LIMIT=10`,
 `N_SHARDS=1`, and `PATH_COLUMN=nifti_path` smoke command in
 `docs/omni_fmri_hpc_runbook.md`.
 
+Known working submit style:
+
+```bash
+qsub -q gpu \
+  -N omni_head10 \
+  -o ${OMNI_OUT}/logs/pbs/omni_head10.out \
+  -e ${OMNI_OUT}/logs/pbs/omni_head10.err \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=${CHECKPOINT},\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/head10_shard,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_head10,\
+INPUT_KIND=nifti,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=1,\
+LIMIT=10,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
+```
+
 Check outputs:
 
 ```bash
-head -n 2 ${OMNI_OUT}/embeddings/omni_header_ready_head10.tsv
-cat ${OMNI_OUT}/embeddings/omni_header_ready_head10.qc_summary.tsv
-cat ${OMNI_OUT}/embeddings/omni_header_ready_head10.failures.tsv
+cat ${OMNI_OUT}/logs/pbs/omni_head10.out
+cat ${OMNI_OUT}/logs/pbs/omni_head10.err
+head -n 2 ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.tsv
+cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.qc_summary.tsv
+cat ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.failures.tsv
+head ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.segment_qc.tsv
+wc -l ${OMNI_OUT}/embeddings/head10_shard/omni_embeddings_shard_001_of_001.tsv
 ```
 
 Expected embedding table columns:
 
 ```text
 eid subject_id sample_id batch image_path emb_001 ... emb_768
+```
+
+Head10 pass criteria:
+
+```text
+embedded_subjects = 10
+failed_subjects = 0
+missing_paths = 0
+embedding_width = 768
+finite_fraction close to 1.0
+embedding TSV line count = 11 including header
 ```
 
 ### 6. First Full Batch Test: 0009
@@ -351,19 +389,47 @@ command in `docs/omni_fmri_hpc_runbook.md`.
 Check outputs:
 
 ```bash
-head -n 2 ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100_all_cases.tsv
-cat ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100_all_cases.qc_summary.tsv
-cat ${OMNI_OUT}/embeddings/omni_0009_missing_afterbench100_all_cases.failures.tsv
+head -n 2 ${OMNI_OUT}/embeddings/batch_0009_shard/omni_embeddings_shard_001_of_001.tsv
+cat ${OMNI_OUT}/embeddings/batch_0009_shard/omni_embeddings_shard_001_of_001.qc_summary.tsv
+cat ${OMNI_OUT}/embeddings/batch_0009_shard/omni_embeddings_shard_001_of_001.failures.tsv
 ```
 
 ### 7. All Header-Ready Inference
 
-Do not run all 27,085 NIfTI in one large interactive job. After head10 and 0009 pass, create a PBS array/sharded runner.
+Do not run all 27,085 NIfTI in one large interactive job. After head10 and 0009 pass, submit the PBS array/sharded runner:
+
+```bash
+qsub -q gpu -J 1-64 \
+  -N omni_hdrready \
+  -o /dev/null \
+  -e ${OMNI_OUT}/logs/pbs/ \
+  -v REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI,\
+PYTHON_BIN=${OMNI_PYTHON},\
+MANIFEST=${OMNI_OUT}/manifests/manifest_header_ready_all_cases.tsv,\
+CHECKPOINT=${CHECKPOINT},\
+OMNI_OUT_DIR=${OMNI_OUT}/embeddings/header_ready_shards,\
+WORK_ROOT=${OMNI_OUT}/embeddings/work_header_ready_shards,\
+INPUT_KIND=nifti,\
+PATH_COLUMN=nifti_path,\
+N_SHARDS=64,\
+FORCE=1 \
+  scripts/omni_pipeline/submit_omni_extraction.pbs
+```
 
 For now, the intended eventual all-case output path is:
 
 ```text
 ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv
+```
+
+After all shards complete, merge them:
+
+```bash
+python scripts/omni_pipeline/merge_tsv_shards.py \
+  --shards-glob "${OMNI_OUT}/embeddings/header_ready_shards/omni_embeddings_shard_*_of_064.tsv" \
+  --output ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.tsv \
+  --summary ${OMNI_OUT}/embeddings/omni_header_ready_all_cases.merge_summary.tsv \
+  --force
 ```
 
 ### 8. Filter Omni All-Case Embeddings To NeuroSTORM First Cases
@@ -477,3 +543,17 @@ dtype = float32
 - Confirm UKB covariate TSV path for GWAS input preparation.
 - Build full-scale PBS/sharded inference runner after 0009 succeeds.
 - Add header-fixed batches 0004-0008 only after re-audit passes.
+
+## PBS/GPU Notes From 2026-07-20 Debugging
+
+- Use `qsub -q gpu` for Omni GPU extraction. The default route queue placed the
+  job in `short`, where `ngpus` availability is zero.
+- Keep Omni extraction PBS resources in the NeuroSTORM-compatible form
+  `ncpus/mem/walltime/ngpus`; do not use `select=...` for this script.
+- Do not use `qsub -J 1-1`; submit single smoke jobs without `-J`.
+- Pass `REPO_ROOT=/working/lab_puyag/bingjinZ/Omni-fMRI` so relative script
+  paths resolve inside PBS.
+- Pass `PYTHON_BIN=/working/lab_puyag/bingjinZ/anaconda3/envs/omnifmri/bin/python`;
+  default `python` on GPU jobs lacked `pandas`.
+- `#PBS -j oe` merges stderr into stdout. Use explicit `-o/-e` file paths for
+  smoke tests and inspect `${OMNI_OUT}/logs/pbs/omni_head10.out`.

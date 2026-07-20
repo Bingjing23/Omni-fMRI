@@ -137,6 +137,27 @@ python quickstart/quickstart_smoke.py \
 CPU smoke testing may be possible for small checks, but full feature extraction
 is expected to be slow and may fail if CUDA-specific dependencies are missing.
 
+## UKB Omni HPC Notes
+
+For the UKB 20227 Omni workflow, use the maintained runbook and handoff rather
+than reconstructing PBS commands from memory:
+
+```text
+docs/omni_fmri_hpc_runbook.md
+docs/current_omni_handoff.md
+```
+
+Known working smoke-test pattern on HPC:
+
+```text
+qsub -q gpu, single head10 job without -J, explicit REPO_ROOT, explicit PYTHON_BIN
+```
+
+The 2026-07-20 PBS debugging notes are recorded in
+`docs/omni_fmri_hpc_runbook.md` under `PBS/GPU Lessons Learned`. They cover the
+`ngpus` queue issue, `select` resource conflict, `qsub -J 1-1` rejection,
+relative script path failure, and missing `pandas` from the default job Python.
+
 ## Common Workflows
 
 Preprocess raw NIfTI:
