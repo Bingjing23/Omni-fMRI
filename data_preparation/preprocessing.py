@@ -37,6 +37,13 @@ import nibabel as nib
 from nibabel.affines import apply_affine
 from tqdm import tqdm
 
+AFFINE_TARGET = np.array([
+    [-2, 0, 0, 96],
+    [0, 2, 0, -112],
+    [0, 0, 2, -90],
+    [0, 0, 0, 1],
+])
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
