@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
         default=",".join(DEFAULT_BATCHES),
         help="Comma-separated batch directory names. Defaults to known header-ready batches only.",
     )
+    parser.add_argument(
+        "--allow-repaired-batches",
+        action="store_true",
+        help="Allow explicitly requested batches that were previously blocked after external repair/re-audit.",
+    )
     parser.add_argument("--glob", default="*.nii.gz", help="NIfTI glob within each batch directory.")
     parser.add_argument(
         "--case-id-regex",
@@ -211,9 +216,14 @@ def audit_header(
     }
 
 
-def iter_nifti_paths(ukb_root: Path, batches: Iterable[str], pattern: str) -> Iterable[tuple[str, Path]]:
+def iter_nifti_paths(
+    ukb_root: Path,
+    batches: Iterable[str],
+    pattern: str,
+    allow_repaired_batches: bool,
+) -> Iterable[tuple[str, Path]]:
     for batch in batches:
-        if batch in BLOCKED_BATCHES:
+        if batch in BLOCKED_BATCHES and not allow_repaired_batches:
             raise ValueError(f"Refusing to scan blocked header-repair batch: {batch}")
         batch_dir = ukb_root / batch
         if not batch_dir.is_dir():
@@ -251,7 +261,7 @@ def main() -> int:
     eid_pattern = re.compile(args.eid_regex)
 
     rows: list[dict[str, object]] = []
-    for tag, path in iter_nifti_paths(ukb_root, batches, args.glob):
+    for tag, path in iter_nifti_paths(ukb_root, batches, args.glob, args.allow_repaired_batches):
         eid, case_id = extract_ids(path, case_pattern, eid_pattern)
         audit = audit_header(
             path,
