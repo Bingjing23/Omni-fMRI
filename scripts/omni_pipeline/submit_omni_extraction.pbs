@@ -29,6 +29,8 @@ set -euo pipefail
 #   CONFIG          Default: configs/pretrain.yaml
 #   PATH_COLUMN     Default: image_path. Use nifti_path for audited UKB manifests.
 #   SEGMENT_AGG     Default: mean
+#   SEGMENT_BATCH_SIZE
+#                   Default: 4. Number of NPZ segments per GPU forward call.
 #   LIMIT           Optional per-shard first-N limit for smoke tests.
 #   FORCE           If 1, overwrite existing shard outputs.
 #   DRY_RUN         If 1, validate shard manifest paths without loading the model.
@@ -46,6 +48,7 @@ DEVICE="${DEVICE:-cuda:0}"
 CONFIG="${CONFIG:-configs/pretrain.yaml}"
 PATH_COLUMN="${PATH_COLUMN:-image_path}"
 SEGMENT_AGG="${SEGMENT_AGG:-mean}"
+SEGMENT_BATCH_SIZE="${SEGMENT_BATCH_SIZE:-4}"
 LIMIT="${LIMIT:-}"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -71,6 +74,8 @@ echo "OMNI_OUT_DIR=${OMNI_OUT_DIR}"
 echo "WORK_ROOT=${WORK_ROOT}"
 echo "INPUT_KIND=${INPUT_KIND}"
 echo "PATH_COLUMN=${PATH_COLUMN}"
+echo "SEGMENT_AGG=${SEGMENT_AGG}"
+echo "SEGMENT_BATCH_SIZE=${SEGMENT_BATCH_SIZE}"
 echo "N_SHARDS=${N_SHARDS}"
 echo "INDEX=${INDEX}"
 echo "LIMIT=${LIMIT}"
@@ -89,6 +94,7 @@ args=(
   --path-column "${PATH_COLUMN}"
   --device "${DEVICE}"
   --segment-aggregation "${SEGMENT_AGG}"
+  --segment-batch-size "${SEGMENT_BATCH_SIZE}"
   --shard-index "${INDEX}"
   --num-shards "${N_SHARDS}"
 )

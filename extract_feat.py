@@ -289,6 +289,48 @@ def extract_tokens(backbone: nn.Module, sample: torch.Tensor) -> tuple[np.ndarra
     return cls_token, patch_tokens, patch_coords
 
 
+@torch.no_grad()
+def extract_cls_tokens(backbone: nn.Module, sample: torch.Tensor) -> np.ndarray:
+    """Extract final-layer CLS tokens for a batch of samples."""
+    input_dict = backbone.patch_tokenizer(sample)
+    current_img_size = sample.shape[2:]
+
+    tokens, _, _, _, _ = backbone.mixed_patch(
+        sample,
+        backbone.pos_embed,
+        input_dict,
+        current_img_size=current_img_size,
+    )
+
+    seqlens = torch.as_tensor(input_dict["seqlens"], device=sample.device, dtype=torch.long)
+    arange = torch.arange(tokens.shape[1], device=sample.device).unsqueeze(0)
+    valid_mask = arange < seqlens.unsqueeze(1)
+
+    tokens_packed = tokens[valid_mask]
+    cu_seqlens = torch.cat(
+        [
+            torch.zeros(1, device=sample.device, dtype=torch.int32),
+            seqlens.cumsum(0, dtype=torch.int32),
+        ]
+    ).contiguous()
+    max_seqlen = int(seqlens.max().item())
+
+    layer_outputs = backbone.forward_features(
+        tokens_packed,
+        cu_seqlens=cu_seqlens,
+        max_seqlen=max_seqlen,
+    )
+    last_tokens = layer_outputs[-1]
+
+    cls_tokens = []
+    offset = 0
+    for seq_len_tensor in seqlens:
+        seq_len = int(seq_len_tensor.item())
+        cls_tokens.append(last_tokens[offset].detach().float().cpu().numpy())
+        offset += seq_len
+    return np.asarray(cls_tokens, dtype=np.float32)
+
+
 class ExtractFeaturesApp(YamlBackedCliApp):
     default_config_path = Path("configs/pretrain.yaml")
 
